@@ -1,0 +1,130 @@
+Database Tables and Columns
+Table: mg_admin_widgets
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+section	varchar(32)	NO	MUL	
+slug	varchar(64)	NO		
+title	varchar(100)	NO		
+is_enabled	tinyint(1)	NO		
+sort_order	int	NO		
+created_at	datetime	NO		DEFAULT_GENERATED
+
+Table: mg_market_cache
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+token_symbol	varchar(16)	NO	UNI	
+token_mint	varchar(64)	NO		
+price_usd	decimal(30,10)	YES		
+market_cap_usd	decimal(30,2)	YES		
+fdv_usd	decimal(30,2)	YES		
+liquidity_usd	decimal(30,2)	YES		
+volume24h_usd	decimal(30,2)	YES		
+price_change_24h	decimal(10,4)	YES		
+holders	int unsigned	YES		
+sol_price_usd	decimal(20,4)	YES		
+updated_at	datetime	NO		DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+Table: mg_moog_holders
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+wallet	varchar(64)	NO	UNI	
+raw_amount	decimal(40,0)	NO		
+ui_amount	decimal(30,9)	NO		
+percent	decimal(10,6)	YES		
+token_account	varchar(64)	YES		
+updated_at	datetime	NO		
+
+Table: mg_moog_og_buyers
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+wallet	varchar(64)	NO	UNI	
+first_buy_time	datetime	NO		
+first_buy_amount	decimal(30,9)	NO		
+total_bought	decimal(30,9)	NO		
+total_sold	decimal(30,9)	NO		
+current_balance	decimal(30,9)	NO		
+buy_tx_count	int unsigned	NO		
+sell_tx_count	int unsigned	NO		
+is_eligible	tinyint(1)	NO		
+og_tier	tinyint unsigned	NO		
+label_tags	varchar(255)	YES		
+exclude_reason	varchar(255)	YES		
+notes	text	YES		
+snapshot_at	datetime	NO		DEFAULT_GENERATED
+
+Table: mg_moog_og_rewards
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+wallet	varchar(64)	NO	UNI	
+planned_amount	decimal(30,9)	NO		
+tx_hash	varchar(120)	YES		
+status	enum('PENDING','SENT','FAILED','CANCELLED')	NO		
+notes	text	YES		
+created_at	datetime	NO		DEFAULT_GENERATED
+updated_at	datetime	NO		DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+Table: mg_moog_tx
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+tx_hash	varchar(120)	NO	MUL	
+block_time	datetime	NO		
+from_wallet	varchar(64)	NO		
+to_wallet	varchar(64)	NO		
+amount_moog	decimal(30,9)	NO		
+direction	enum('BUY','SELL','TRANSFER')	NO		
+source	varchar(50)	NO		
+
+Table: mg_moog_wallets
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+wallet	varchar(64)	NO	UNI	
+label	varchar(100)	YES		
+type	enum('LP_DEV_HOLD','DEV_TREASURY','AIRDROP','EXCHANGE','USER','PROGRAM','UNKNOWN')	NO		
+tags	varchar(255)	YES		
+socials_x	varchar(80)	YES		
+socials_discord	varchar(80)	YES		
+socials_telegram	varchar(80)	YES		
+socials_notes	text	YES		
+created_at	datetime	NO		DEFAULT_GENERATED
+updated_at	datetime	NO		DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+Table: mg_sync_log
+Column Name	Data Type	Null	Key	Default	Extra
+id	int unsigned	NO	PRI	auto_increment
+job	varchar(32)	NO	MUL	
+ok	tinyint(1)	NO		
+step	varchar(64)	YES		
+message	text	YES		
+payload_json	text	YES		
+duration_ms	int unsigned	YES		
+created_at	datetime	NO		DEFAULT_GENERATED
+
+Table: moog_airdrops
+Column Name	Data Type	Null	Key	Default	Extra
+id	int	NO	PRI	auto_increment
+wallet_address	varchar(128)	NO	MUL	
+amount	bigint	NO		
+source	varchar(32)	YES		
+name	varchar(128)	YES		
+paid	tinyint(1)	YES		
+verified	tinyint(1)	YES		
+notes	text	YES		
+date_added	timestamp	NO		DEFAULT_GENERATED
+
+Table: system_settings
+Column Name	Data Type	Null	Key	Default	Extra
+id	int	NO	PRI	auto_increment
+setting_key	varchar(100)	NO		
+setting_value	text	YES		
+
+Table: x_posts
+Column Name	Data Type	Null	Key	Default	Extra
+id	int	NO	PRI	auto_increment
+body	text	NO		
+category	varchar(50)	YES		
+tags	varchar(255)	YES		
+is_active	tinyint(1)	YES		
+times_used	int	YES		
+last_used_at	datetime	YES		
+created_at	datetime	YES		DEFAULT_GENERATED
+notes	varchar(255)	YES		

@@ -55,6 +55,7 @@ function nav_link($slug, $label, $current) {
         nav_link('tx',         'Tx History',   $current);
         nav_link('xposts',     'X Posts',      $current);
         nav_link('settings',   'Settings',     $current);
+		nav_link('ai_startup', 'AI Startup',   $current);
     ?>
 
     <div class="wallet-jump">

@@ -1,425 +1,303 @@
 <?php
 // mooglife/pages/wallet.php
-// Full Goblin Profile for a single wallet, safe even if some tables don't exist.
+// Wallet profile view: show everything we know about a single wallet.
 
 require __DIR__ . '/../includes/db.php';
 
-$db = moog_db();
-
-/**
- * Check if a table exists in the current DB.
- */
-function mg_table_exists(mysqli $db, string $name): bool {
-    $name = $db->real_escape_string($name);
-    $res  = $db->query("SHOW TABLES LIKE '{$name}'");
-    if (!$res) return false;
-    $ok = $res->num_rows > 0;
-    $res->free();
-    return $ok;
-}
-
-function short_addr(string $w): string {
-    return substr($w, 0, 4) . '...' . substr($w, -4);
-}
+$db = mg_db();
 
 // ---------------------------------------------------------------------
-// Wallet param
+// Resolve requested wallet
 // ---------------------------------------------------------------------
 $wallet = isset($_GET['wallet']) ? trim($_GET['wallet']) : '';
+$wallet = substr($wallet, 0, 64); // basic safety
+
 if ($wallet === '') {
     ?>
-    <h1>Wallet Profile</h1>
-    <div class="card">
-        No wallet selected. Use the <strong>Jump to wallet...</strong> box
-        in the sidebar or click any wallet link in the tables.
-    </div>
+    <h1>Wallet profile</h1>
+    <p>No wallet provided. Use the sidebar “Jump to wallet…” form or add <code>&amp;wallet=...</code> to the URL.</p>
     <?php
     return;
 }
 
-// ---------------------------------------------------------------------
-// 1) Holder + label info
-// ---------------------------------------------------------------------
-$holder        = null;
-$label         = null;
-$type          = null;
-$tags          = null;
-$balance       = 0.0;
-$percent       = 0.0;
-$holderUpdated = null;
+// simple esc helper
+function esc($s) {
+    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+}
 
-if (mg_table_exists($db, 'mg_moog_holders')) {
-    $sql = "
-        SELECT h.ui_amount, h.percent, h.updated_at,
-               w.label, w.type, w.tags
-        FROM mg_moog_holders h
-        LEFT JOIN mg_moog_wallets w ON w.wallet = h.wallet
-        WHERE h.wallet = ?
+// ---------------------------------------------------------------------
+// 1) Basic metadata from mg_moog_wallets
+// ---------------------------------------------------------------------
+$meta = null;
+
+$stmt = $db->prepare("
+    SELECT wallet, label, type, tags,
+           socials_x, socials_discord, socials_telegram, socials_notes,
+           created_at, updated_at
+    FROM mg_moog_wallets
+    WHERE wallet = ?
+    LIMIT 1
+");
+if ($stmt) {
+    $stmt->bind_param('s', $wallet);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $meta = $res->fetch_assoc() ?: null;
+    $stmt->close();
+}
+
+// ---------------------------------------------------------------------
+// 2) Holder snapshot from mg_moog_holders
+// ---------------------------------------------------------------------
+$holder = null;
+
+$stmt = $db->prepare("
+    SELECT wallet, ui_amount, percent, updated_at
+    FROM mg_moog_holders
+    WHERE wallet = ?
+    LIMIT 1
+");
+if ($stmt) {
+    $stmt->bind_param('s', $wallet);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $holder = $res->fetch_assoc() ?: null;
+    $stmt->close();
+}
+
+// ---------------------------------------------------------------------
+// 3) Airdrop summary from moog_airdrops
+// ---------------------------------------------------------------------
+$airCount = 0;
+$airTotal = 0.0;
+
+$stmt = $db->prepare("
+    SELECT COUNT(*) AS c, COALESCE(SUM(amount), 0) AS s
+    FROM moog_airdrops
+    WHERE wallet_address = ?
+");
+if ($stmt) {
+    $stmt->bind_param('s', $wallet);
+    $stmt->execute();
+    $stmt->bind_result($c, $s);
+    if ($stmt->fetch()) {
+        $airCount = (int)$c;
+        $airTotal = (float)$s;
+    }
+    $stmt->close();
+}
+
+// ---------------------------------------------------------------------
+// 4) OG buyer snapshot from mg_moog_og_buyers (if table exists)
+// ---------------------------------------------------------------------
+$ogBuyer   = null;
+$ogEnabled = false;
+
+$check = $db->query("SHOW TABLES LIKE 'mg_moog_og_buyers'");
+if ($check && $check->num_rows > 0) {
+    $ogEnabled = true;
+    $check->close();
+
+    $stmt = $db->prepare("
+        SELECT wallet,
+               first_buy_time,
+               first_buy_amount,
+               total_bought,
+               total_sold,
+               current_balance,
+               buy_tx_count,
+               sell_tx_count,
+               is_eligible,
+               og_tier,
+               label_tags,
+               exclude_reason,
+               notes,
+               snapshot_at
+        FROM mg_moog_og_buyers
+        WHERE wallet = ?
         LIMIT 1
-    ";
-    $stmt = $db->prepare($sql);
+    ");
     if ($stmt) {
         $stmt->bind_param('s', $wallet);
         $stmt->execute();
         $res = $stmt->get_result();
-        if ($row = $res->fetch_assoc()) {
-            $holder        = $row;
-            $balance       = (float)$row['ui_amount'];
-            $percent       = (float)$row['percent'];
-            $label         = $row['label'] ?? null;
-            $type          = $row['type']  ?? null;
-            $tags          = $row['tags']  ?? null;
-            $holderUpdated = $row['updated_at'] ?? null;
-        }
+        $ogBuyer = $res->fetch_assoc() ?: null;
         $stmt->close();
     }
-}
-
-// Rank among holders
-$rank = null;
-if ($balance > 0 && mg_table_exists($db, 'mg_moog_holders')) {
-    $stmt = $db->prepare("
-        SELECT COUNT(*) + 1 AS r
-        FROM mg_moog_holders
-        WHERE ui_amount > ?
-    ");
-    if ($stmt) {
-        $stmt->bind_param('d', $balance);
-        $stmt->execute();
-        $stmt->bind_result($r);
-        if ($stmt->fetch()) {
-            $rank = (int)$r;
-        }
-        $stmt->close();
-    }
+} elseif ($check) {
+    $check->close();
 }
 
 // ---------------------------------------------------------------------
-// 2) Airdrop summary (moog_airdrops if it exists)
+// 5) OG rewards from mg_moog_og_rewards (if table exists)
 // ---------------------------------------------------------------------
-$airdropCount = 0;
-$airdropTotal = 0.0;
-$hasAirdrops  = mg_table_exists($db, 'moog_airdrops');
+$ogRewards   = [];
+$rewardsOn   = false;
+$check = $db->query("SHOW TABLES LIKE 'mg_moog_og_rewards'");
+if ($check && $check->num_rows > 0) {
+    $rewardsOn = true;
+    $check->close();
 
-if ($hasAirdrops) {
     $stmt = $db->prepare("
-        SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS s
-        FROM moog_airdrops
-        WHERE wallet_address = ?
+        SELECT wallet, planned_amount, tx_hash, status, notes, created_at, updated_at
+        FROM mg_moog_og_rewards
+        WHERE wallet = ?
+        ORDER BY created_at DESC
     ");
     if ($stmt) {
         $stmt->bind_param('s', $wallet);
-        $stmt->execute();
-        $stmt->bind_result($c, $s);
-        if ($stmt->fetch()) {
-            $airdropCount = (int)$c;
-            $airdropTotal = (float)$s;
-        }
-        $stmt->close();
-    }
-}
-
-// ---------------------------------------------------------------------
-// 3) Trade / tx summary from mg_moog_tx
-// ---------------------------------------------------------------------
-$txCount   = 0;
-$firstSeen = null;
-$lastSeen  = null;
-$buyTotal  = 0.0;
-$sellTotal = 0.0;
-$xferTotal = 0.0;
-$hasTxTable = mg_table_exists($db, 'mg_moog_tx');
-
-if ($hasTxTable) {
-    // first/last / count
-    $stmt = $db->prepare("
-        SELECT
-            COUNT(*)        AS c,
-            MIN(block_time) AS first_seen,
-            MAX(block_time) AS last_seen
-        FROM mg_moog_tx
-        WHERE from_wallet = ? OR to_wallet = ?
-    ");
-    if ($stmt) {
-        $stmt->bind_param('ss', $wallet, $wallet);
-        $stmt->execute();
-        $stmt->bind_result($c, $fs, $ls);
-        if ($stmt->fetch()) {
-            $txCount   = (int)$c;
-            $firstSeen = $fs;
-            $lastSeen  = $ls;
-        }
-        $stmt->close();
-    }
-
-    // sums by direction
-    $stmt = $db->prepare("
-        SELECT direction, COALESCE(SUM(amount_moog),0) AS amt
-        FROM mg_moog_tx
-        WHERE from_wallet = ? OR to_wallet = ?
-        GROUP BY direction
-    ");
-    if ($stmt) {
-        $stmt->bind_param('ss', $wallet, $wallet);
         $stmt->execute();
         $res = $stmt->get_result();
         while ($row = $res->fetch_assoc()) {
-            $dir = strtoupper($row['direction'] ?? '');
-            $amt = (float)$row['amt'];
-            if ($dir === 'BUY') {
-                $buyTotal += $amt;
-            } elseif ($dir === 'SELL') {
-                $sellTotal += $amt;
-            } else {
-                $xferTotal += $amt;
-            }
+            $ogRewards[] = $row;
         }
         $stmt->close();
     }
+} elseif ($check) {
+    $check->close();
 }
 
-$netFlow = $buyTotal - $sellTotal;
-
 // ---------------------------------------------------------------------
-// 4) OG status (mg_og_buyers + mg_og_rewards) – all optional
+// 6) Trade totals + recent trades from mg_moog_tx
 // ---------------------------------------------------------------------
-$isOgBuyer     = false;
-$ogBuySize     = 0.0;
-$ogRewardCount = 0;
-$ogRewardTotal = 0.0;
+// Totals
+$inMoog     = 0.0;
+$outMoog    = 0.0;
+$tradeCount = 0;
 
-$hasOgBuyers  = mg_table_exists($db, 'mg_og_buyers');
-$hasOgRewards = mg_table_exists($db, 'mg_og_rewards');
-
-if ($hasOgBuyers) {
-    $stmt = $db->prepare("
-        SELECT COALESCE(SUM(amount_moog),0) AS amt
-        FROM mg_og_buyers
-        WHERE wallet = ?
-    ");
-    if ($stmt) {
-        $stmt->bind_param('s', $wallet);
-        $stmt->execute();
-        $stmt->bind_result($amt);
-        if ($stmt->fetch()) {
-            $ogBuySize = (float)$amt;
-            if ($ogBuySize > 0) {
-                $isOgBuyer = true;
-            }
-        }
-        $stmt->close();
+$stmt = $db->prepare("
+    SELECT
+        SUM(CASE WHEN to_wallet   = ? THEN amount_moog ELSE 0 END) AS amt_in,
+        SUM(CASE WHEN from_wallet = ? THEN amount_moog ELSE 0 END) AS amt_out,
+        COUNT(*) AS tx_count
+    FROM mg_moog_tx
+    WHERE from_wallet = ? OR to_wallet = ?
+");
+if ($stmt) {
+    $stmt->bind_param('ssss', $wallet, $wallet, $wallet, $wallet);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($row = $res->fetch_assoc()) {
+        $inMoog     = (float)($row['amt_in']  ?? 0);
+        $outMoog    = (float)($row['amt_out'] ?? 0);
+        $tradeCount = (int)($row['tx_count'] ?? 0);
     }
+    $stmt->close();
 }
+$netFlow = $inMoog - $outMoog;
 
-if ($hasOgRewards) {
-    $stmt = $db->prepare("
-        SELECT COUNT(*) AS c, COALESCE(SUM(amount_moog),0) AS s
-        FROM mg_og_rewards
-        WHERE wallet = ?
-    ");
-    if ($stmt) {
-        $stmt->bind_param('s', $wallet);
-        $stmt->execute();
-        $stmt->bind_result($c, $s);
-        if ($stmt->fetch()) {
-            $ogRewardCount = (int)$c;
-            $ogRewardTotal = (float)$s;
-        }
-        $stmt->close();
-    }
-}
-
-// ---------------------------------------------------------------------
-// 5) Goblin score + badges
-// ---------------------------------------------------------------------
-$score = 0;
-
-// 1 point per 1M MOOG
-$score += (int)round($balance / 1_000_000);
-
-// activity
-$score += $txCount * 2;
-$score += $airdropCount * 5;
-
-// OG
-if ($isOgBuyer) {
-    $score += 100;
-}
-
-// big holder bonus
-if ($percent > 0.5) {
-    $score += 250;
-} elseif ($percent > 0.1) {
-    $score += 100;
-}
-
-$tier = 'Goblin Tier';
-if ($percent > 1) {
-    $tier = 'Whale Tier';
-} elseif ($percent > 0.1) {
-    $tier = 'Shark Tier';
-}
-
-$activityBadge = 'Quiet Goblin';
-if ($txCount >= 50) {
-    $activityBadge = 'War Goblin';
-} elseif ($txCount >= 10) {
-    $activityBadge = 'Active Goblin';
-}
-
-// ---------------------------------------------------------------------
-// 6) Detail tables
-// ---------------------------------------------------------------------
-
-// Recent tx – NOTE: no price_usd column here
+// Recent trades
 $recentTx = [];
-if ($hasTxTable) {
-    $stmt = $db->prepare("
-        SELECT block_time, tx_hash, direction, amount_moog,
-               from_wallet, to_wallet
-        FROM mg_moog_tx
-        WHERE from_wallet = ? OR to_wallet = ?
-        ORDER BY block_time DESC
-        LIMIT 25
-    ");
-    if ($stmt) {
-        $stmt->bind_param('ss', $wallet, $wallet);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($row = $res->fetch_assoc()) {
-            $recentTx[] = $row;
-        }
-        $stmt->close();
-    }
-}
 
-// Airdrops
-$recentDrops = [];
-if ($hasAirdrops) {
-    $stmt = $db->prepare("
-        SELECT id, amount, source, notes, tx_hash, created_at
-        FROM moog_airdrops
-        WHERE wallet_address = ?
-        ORDER BY created_at DESC
-        LIMIT 25
-    ");
-    if ($stmt) {
-        $stmt->bind_param('s', $wallet);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($row = $res->fetch_assoc()) {
-            $recentDrops[] = $row;
-        }
-        $stmt->close();
+$stmt = $db->prepare("
+    SELECT
+        block_time,
+        tx_hash,
+        direction,
+        amount_moog,
+        from_wallet,
+        to_wallet,
+        source
+    FROM mg_moog_tx
+    WHERE from_wallet = ? OR to_wallet = ?
+    ORDER BY block_time DESC
+    LIMIT 25
+");
+if ($stmt) {
+    $stmt->bind_param('ss', $wallet, $wallet);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) {
+        $recentTx[] = $row;
     }
-}
-
-// OG rewards rows
-$recentRewards = [];
-if ($hasOgRewards) {
-    $stmt = $db->prepare("
-        SELECT id, amount_moog, status, tx_hash, created_at, updated_at
-        FROM mg_og_rewards
-        WHERE wallet = ?
-        ORDER BY created_at DESC
-        LIMIT 25
-    ");
-    if ($stmt) {
-        $stmt->bind_param('s', $wallet);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($row = $res->fetch_assoc()) {
-            $recentRewards[] = $row;
-        }
-        $stmt->close();
-    }
+    $stmt->close();
 }
 
 // ---------------------------------------------------------------------
-// 7) Render
+// Derive simple display variables
 // ---------------------------------------------------------------------
-$displayLabel = $label ?: short_addr($wallet);
+$label         = $meta['label']         ?? '';
+$type          = $meta['type']          ?? '';
+$tags          = $meta['tags']          ?? '';
+$socials_x     = $meta['socials_x']     ?? '';
+$socials_disc  = $meta['socials_discord'] ?? '';
+$socials_tg    = $meta['socials_telegram'] ?? '';
+$socials_notes = $meta['socials_notes'] ?? '';
+$metaCreated   = $meta['created_at']    ?? null;
+$metaUpdated   = $meta['updated_at']    ?? null;
+
+$balance       = $holder ? (float)$holder['ui_amount'] : 0.0;
+$balancePct    = $holder ? (float)$holder['percent']   : 0.0;
+$holderUpdated = $holder['updated_at'] ?? null;
+
+$ogTier        = $ogBuyer ? (int)$ogBuyer['og_tier'] : 0;
+$isEligible    = $ogBuyer ? (int)$ogBuyer['is_eligible'] === 1 : false;
+$firstBuyTime  = $ogBuyer['first_buy_time']  ?? null;
+$firstBuyAmt   = $ogBuyer ? (float)$ogBuyer['first_buy_amount'] : 0.0;
+$totalBought   = $ogBuyer ? (float)$ogBuyer['total_bought'] : 0.0;
+$totalSold     = $ogBuyer ? (float)$ogBuyer['total_sold']   : 0.0;
+$ogTags        = $ogBuyer['label_tags']     ?? '';
+$excludeReason = $ogBuyer['exclude_reason'] ?? '';
+$ogNotes       = $ogBuyer['notes']          ?? '';
+$snapshotAt    = $ogBuyer['snapshot_at']    ?? null;
+
+// small helpers
+function format_dt($dt) {
+    if (!$dt) return '';
+    $ts = strtotime($dt);
+    if ($ts === false) return $dt;
+    return date('Y-m-d H:i', $ts);
+}
+
 ?>
+<h1>Wallet profile</h1>
 
-<style>
-.wallet-badges {
-    display:flex;
-    flex-wrap:wrap;
-    gap:6px;
-    margin-top:4px;
-}
-.badge {
-    display:inline-block;
-    padding:2px 6px;
-    border-radius:999px;
-    font-size:11px;
-    line-height:1.4;
-}
-.badge-tier    { background:#1f2937; color:#e5e7eb; border:1px solid #4b5563; }
-.badge-og      { background:#0f766e; color:#d1fae5; }
-.badge-active  { background:#1d4ed8; color:#dbeafe; }
-.badge-score   { background:#581c87; color:#e9d5ff; }
-.profile-grid {
-    display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-    gap:12px;
-}
-</style>
+<div class="cards" style="margin-bottom:20px;">
 
-<h1>Wallet Profile</h1>
-
-<div class="card" style="margin-bottom:16px;">
-    <h2 style="margin:0;"><?php echo htmlspecialchars($displayLabel); ?></h2>
-    <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
-        <?php echo htmlspecialchars($wallet); ?>
-        <?php if ($holderUpdated): ?>
-            &middot; Snapshot updated <?php echo htmlspecialchars($holderUpdated); ?>
-        <?php endif; ?>
-    </div>
-
-    <div class="wallet-badges">
-        <span class="badge badge-tier"><?php echo htmlspecialchars($tier); ?></span>
-        <span class="badge badge-active"><?php echo htmlspecialchars($activityBadge); ?></span>
-        <?php if ($isOgBuyer): ?>
-            <span class="badge badge-og">OG Buyer</span>
-        <?php endif; ?>
-        <span class="badge badge-score">Goblin Score: <?php echo number_format($score); ?></span>
-    </div>
-
-    <?php if ($tags): ?>
-        <div style="margin-top:6px;font-size:11px;color:#9ca3af;">
-            Tags: <?php echo htmlspecialchars($tags); ?>
-        </div>
-    <?php endif; ?>
-</div>
-
-<div class="cards" style="margin-bottom:16px;">
     <div class="card">
-        <div class="card-label">Balance (MOOG)</div>
-        <div class="card-value"><?php echo number_format($balance, 3); ?></div>
+        <div class="card-label">Wallet</div>
+        <div class="card-value" style="word-break:break-all;">
+            <code><?php echo esc($wallet); ?></code>
+        </div>
         <div class="card-sub">
-            <?php echo number_format($percent, 6); ?>% of tracked supply
-            <?php if ($rank !== null): ?>
-                &middot; Rank #<?php echo number_format($rank); ?>
-            <?php else: ?>
-                <?php if ($balance <= 0): ?>
-                    &middot; Not in current top snapshot
-                <?php endif; ?>
+            <?php if ($label !== ''): ?>
+                Label: <strong><?php echo esc($label); ?></strong><br>
+            <?php endif; ?>
+            <?php if ($type !== ''): ?>
+                Type: <code><?php echo esc($type); ?></code><br>
+            <?php endif; ?>
+            <?php if ($tags !== ''): ?>
+                Tags: <?php echo esc($tags); ?><br>
+            <?php endif; ?>
+            <?php if ($metaCreated): ?>
+                Created in GoblinsHQ: <?php echo esc(format_dt($metaCreated)); ?><br>
+            <?php endif; ?>
+            <?php if ($metaUpdated): ?>
+                Last updated: <?php echo esc(format_dt($metaUpdated)); ?>
+            <?php endif; ?>
+            <?php if (!$meta): ?>
+                <span class="muted" style="display:block;margin-top:4px;font-size:12px;">
+                    No metadata found in <code>mg_moog_wallets</code> yet.
+                </span>
             <?php endif; ?>
         </div>
     </div>
 
     <div class="card">
-        <div class="card-label">Activity</div>
-        <div class="card-value"><?php echo number_format($txCount); ?> tx</div>
+        <div class="card-label">Balance</div>
+        <div class="card-value">
+            <?php echo number_format($balance, 3); ?> MOOG
+        </div>
         <div class="card-sub">
-            <?php if ($firstSeen): ?>
-                First: <?php echo htmlspecialchars($firstSeen); ?><br>
+            Share of tracked supply:
+            <?php echo number_format($balancePct, 4); ?>%
+            <?php if ($holderUpdated): ?>
+                <br>Snapshot updated: <?php echo esc(format_dt($holderUpdated)); ?>
             <?php endif; ?>
-            <?php if ($lastSeen): ?>
-                Last: <?php echo htmlspecialchars($lastSeen); ?>
-            <?php else: ?>
-                No on-chain swaps recorded yet.
+            <?php if (!$holder): ?>
+                <br><span class="muted" style="font-size:12px;">
+                    Wallet not in current <code>mg_moog_holders</code> snapshot (balance may be 0 or below top cutoff).
+                </span>
             <?php endif; ?>
         </div>
     </div>
@@ -427,134 +305,175 @@ $displayLabel = $label ?: short_addr($wallet);
     <div class="card">
         <div class="card-label">Airdrops</div>
         <div class="card-value">
-            <?php echo number_format($airdropCount); ?> /
-            <?php echo number_format($airdropTotal); ?>
+            <?php echo number_format($airCount); ?> drops
         </div>
         <div class="card-sub">
-            Count / total MOOG airdropped
-            <?php if (!$hasAirdrops): ?>
-                (airdrop table not created yet)
+            Total airdropped:
+            <?php echo number_format($airTotal, 0); ?> MOOG
+            <?php if ($airCount === 0): ?>
+                <br><span class="muted" style="font-size:12px;">No records in <code>moog_airdrops</code>.</span>
             <?php endif; ?>
         </div>
     </div>
 
     <div class="card">
-        <div class="card-label">Net MOOG Flow</div>
+        <div class="card-label">Trades</div>
         <div class="card-value">
-            <?php echo number_format($netFlow, 3); ?>
+            <?php echo number_format($tradeCount); ?> swaps
         </div>
         <div class="card-sub">
-            Buys: <?php echo number_format($buyTotal, 3); ?> &middot;
-            Sells: <?php echo number_format($sellTotal, 3); ?>
+            In: <?php echo number_format($inMoog, 3); ?> MOOG<br>
+            Out: <?php echo number_format($outMoog, 3); ?> MOOG<br>
+            Net flow: <strong><?php echo number_format($netFlow, 3); ?> MOOG</strong>
         </div>
     </div>
+
+    <?php if ($ogEnabled): ?>
+        <div class="card">
+            <div class="card-label">OG Buyer</div>
+            <?php if ($ogBuyer): ?>
+                <div class="card-value">
+                    Tier <?php echo (int)$ogTier; ?>
+                    <?php if ($isEligible): ?>
+                        <span class="pill" style="background:#16a34a;margin-left:8px;">ELIGIBLE</span>
+                    <?php else: ?>
+                        <span class="pill" style="background:#b91c1c;margin-left:8px;">INELIGIBLE</span>
+                    <?php endif; ?>
+                </div>
+                <div class="card-sub">
+                    First buy: <?php echo esc(format_dt($firstBuyTime)); ?>
+                    (<?php echo number_format($firstBuyAmt, 3); ?> MOOG)<br>
+                    Total bought: <?php echo number_format($totalBought, 3); ?> MOOG<br>
+                    Total sold: <?php echo number_format($totalSold, 3); ?> MOOG<br>
+                    Buys: <?php echo (int)$ogBuyer['buy_tx_count']; ?>,
+                    Sells: <?php echo (int)$ogBuyer['sell_tx_count']; ?><br>
+                    <?php if ($ogTags !== ''): ?>
+                        Tags: <?php echo esc($ogTags); ?><br>
+                    <?php endif; ?>
+                    <?php if ($excludeReason !== ''): ?>
+                        Exclude reason: <?php echo esc($excludeReason); ?><br>
+                    <?php endif; ?>
+                    <?php if ($ogNotes !== ''): ?>
+                        Notes: <?php echo esc($ogNotes); ?><br>
+                    <?php endif; ?>
+                    <?php if ($snapshotAt): ?>
+                        Snapshot at: <?php echo esc(format_dt($snapshotAt)); ?>
+                    <?php endif; ?>
+                </div>
+            <?php else: ?>
+                <div class="card-sub">
+                    Wallet not present in <code>mg_moog_og_buyers</code> snapshot.
+                </div>
+            <?php endif; ?>
+        </div>
+    <?php endif; ?>
+
 </div>
 
-<div class="profile-grid" style="margin-bottom:16px;">
-    <div class="card">
-        <h3 style="margin-top:0;">Recent MOOG Swaps</h3>
-        <table class="data">
-            <thead>
+<?php if ($rewardsOn): ?>
+    <div class="card" style="margin-bottom:20px;">
+        <h2 style="margin-top:0;">OG Rewards</h2>
+        <?php if (empty($ogRewards)): ?>
+            <p>No OG reward records for this wallet.</p>
+        <?php else: ?>
+            <div style="overflow-x:auto;">
+                <table class="data" style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                    <tr>
+                        <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Planned Amount</th>
+                        <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Status</th>
+                        <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Tx Hash</th>
+                        <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Notes</th>
+                        <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Created</th>
+                        <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Updated</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($ogRewards as $r): ?>
+                        <tr>
+                            <td style="padding:6px;border-bottom:1px solid #111827;">
+                                <?php echo number_format((float)$r['planned_amount'], 3); ?> MOOG
+                            </td>
+                            <td style="padding:6px;border-bottom:1px solid #111827;">
+                                <span class="pill">
+                                    <?php echo esc($r['status']); ?>
+                                </span>
+                            </td>
+                            <td style="padding:6px;border-bottom:1px solid #111827;font-size:12px;">
+                                <?php if (!empty($r['tx_hash'])): ?>
+                                    <code><?php echo esc($r['tx_hash']); ?></code>
+                                <?php else: ?>
+                                    —
+                                <?php endif; ?>
+                            </td>
+                            <td style="padding:6px;border-bottom:1px solid #111827;">
+                                <?php echo esc($r['notes'] ?? ''); ?>
+                            </td>
+                            <td style="padding:6px;border-bottom:1px solid #111827;">
+                                <?php echo esc(format_dt($r['created_at'])); ?>
+                            </td>
+                            <td style="padding:6px;border-bottom:1px solid #111827;">
+                                <?php echo esc(format_dt($r['updated_at'])); ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
+
+<div class="card">
+    <h2 style="margin-top:0;">Recent Trades</h2>
+    <?php if (empty($recentTx)): ?>
+        <p>No trades recorded in <code>mg_moog_tx</code> for this wallet yet.</p>
+    <?php else: ?>
+        <div style="overflow-x:auto;">
+            <table class="data" style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead>
                 <tr>
-                    <th>Time</th>
-                    <th>Dir</th>
-                    <th>Amount</th>
-                    <th>Counterparty</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Time</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Direction</th>
+                    <th style="text-align:right;padding:6px;border-bottom:1px solid #1f2937;">Amount (MOOG)</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">From</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">To</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Source</th>
+                    <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Tx Hash</th>
                 </tr>
-            </thead>
-            <tbody>
-            <?php if (!$recentTx): ?>
-                <tr><td colspan="4">No swaps recorded for this wallet.</td></tr>
-            <?php else: ?>
+                </thead>
+                <tbody>
                 <?php foreach ($recentTx as $tx): ?>
-                    <?php
-                        $dir = strtoupper($tx['direction'] ?? '');
-                        $counter = ($tx['from_wallet'] === $wallet)
-                            ? $tx['to_wallet']
-                            : $tx['from_wallet'];
-                    ?>
                     <tr>
-                        <td><?php echo htmlspecialchars($tx['block_time']); ?></td>
-                        <td><?php echo htmlspecialchars($dir ?: '?'); ?></td>
-                        <td><?php echo number_format((float)$tx['amount_moog'], 3); ?></td>
-                        <td>
-                            <?php
-                            if ($counter) {
-                                echo wallet_link($counter, short_addr($counter), true);
-                            } else {
-                                echo '-';
-                            }
-                            ?>
+                        <td style="padding:6px;border-bottom:1px solid #111827;">
+                            <?php echo esc(format_dt($tx['block_time'])); ?>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid #111827;">
+                            <?php echo esc($tx['direction']); ?>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid #111827;text-align:right;">
+                            <?php echo number_format((float)$tx['amount_moog'], 3); ?>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:12px;">
+                            <?php echo wallet_link($tx['from_wallet'], null, true); ?>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:12px;">
+                            <?php echo wallet_link($tx['to_wallet'], null, true); ?>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid #111827;">
+                            <?php echo esc($tx['source']); ?>
+                        </td>
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:12px;">
+                            <?php if (!empty($tx['tx_hash'])): ?>
+                                <code><?php echo esc($tx['tx_hash']); ?></code>
+                            <?php else: ?>
+                                —
+                            <?php endif; ?>
                         </td>
                     </tr>
                 <?php endforeach; ?>
-            <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="card">
-        <h3 style="margin-top:0;">Airdrops to this Wallet</h3>
-        <table class="data">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Amount</th>
-                    <th>Source</th>
-                    <th>Notes</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php if (!$hasAirdrops): ?>
-                <tr><td colspan="4">Airdrop table not created yet.</td></tr>
-            <?php elseif (!$recentDrops): ?>
-                <tr><td colspan="4">No airdrops recorded for this wallet.</td></tr>
-            <?php else: ?>
-                <?php foreach ($recentDrops as $d): ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($d['created_at']); ?></td>
-                        <td><?php echo number_format((float)$d['amount'], 3); ?></td>
-                        <td><?php echo htmlspecialchars($d['source'] ?? ''); ?></td>
-                        <td><?php echo htmlspecialchars($d['notes'] ?? ''); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="card">
-        <h3 style="margin-top:0;">OG Rewards</h3>
-        <table class="data">
-            <thead>
-                <tr>
-                    <th>Status</th>
-                    <th>Amount</th>
-                    <th>Tx Hash</th>
-                    <th>Updated</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php if (!$hasOgRewards): ?>
-                <tr><td colspan="4">OG rewards table not created yet.</td></tr>
-            <?php elseif (!$recentRewards): ?>
-                <tr><td colspan="4">No OG rewards for this wallet.</td></tr>
-            <?php else: ?>
-                <?php foreach ($recentRewards as $r): ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($r['status'] ?? ''); ?></td>
-                        <td><?php echo number_format((float)$r['amount_moog'], 3); ?></td>
-                        <td>
-                            <?php
-                            $h = $r['tx_hash'] ?? '';
-                            echo $h ? htmlspecialchars(short_addr($h)) : '-';
-                            ?>
-                        </td>
-                        <td><?php echo htmlspecialchars($r['updated_at'] ?? $r['created_at']); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
 </div>
