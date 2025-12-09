@@ -1,0 +1,66 @@
+##############################
+#  Mooglife Git Ignore File  #
+##############################
+
+# --- SYSTEM FILES ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- LOCAL ENV / CONFIG ---
+includes/config.php
+includes/auth_secret.php
+.env
+*.env
+
+# --- DB / BACKUPS ---
+*.sql
+*.sqlite
+*.db
+/backups/
+
+# --- LOGS ---
+logs/
+*.log
+*.error
+*.trace
+
+# --- CACHED / GENERATED ---
+/cache/
+/temp/
+/tmp/
+/sessions/
+*.cache
+
+# --- IMAGE OUTPUTS / NFT GENERATION ---
+/generated/
+/output/
+/images_temp/
+
+# --- API / PRIVATE KEYS ---
+/keys/
+/secrets/
+/private/
+/.credential
+
+# --- COMPOSER / VENDOR IF USED ---
+/vendor/
+
+# --- NODE FILES (if ever used) ---
+/node_modules/
+
+# --- OS / EDITOR JUNK ---
+*.swp
+*.swo
+*.bak
+*.old
+
+# --- DO NOT TRACK WAMP/LOCALHOST RUNTIME ---
+/wamp64/
+/xampp/
+/local/
+
+##############################
+# ALLOW WHITELIST (SAFE FILES)
+##############################
+!.gitignore
