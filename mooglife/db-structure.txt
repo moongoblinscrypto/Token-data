@@ -1,130 +1,130 @@
-Database Tables and Columns
+Database Schema: goblinshq
+Table: mg_admin_users
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+username	varchar	50	UNI	NO	&nbsp;	
+password_hash	varchar	255		NO	&nbsp;	
+role	varchar	32		NO	admin	
+is_active	tinyint	&nbsp;		NO	1	
+created_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
+last_login_at	datetime	&nbsp;		YES	&nbsp;	
 Table: mg_admin_widgets
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-section	varchar(32)	NO	MUL	
-slug	varchar(64)	NO		
-title	varchar(100)	NO		
-is_enabled	tinyint(1)	NO		
-sort_order	int	NO		
-created_at	datetime	NO		DEFAULT_GENERATED
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+section	varchar	32	MUL	NO	dashboard	
+slug	varchar	64		NO	&nbsp;	
+title	varchar	100		NO	&nbsp;	
+is_enabled	tinyint	&nbsp;		NO	1	
+sort_order	int	&nbsp;		NO	0	
+created_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
 Table: mg_market_cache
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-token_symbol	varchar(16)	NO	UNI	
-token_mint	varchar(64)	NO		
-price_usd	decimal(30,10)	YES		
-market_cap_usd	decimal(30,2)	YES		
-fdv_usd	decimal(30,2)	YES		
-liquidity_usd	decimal(30,2)	YES		
-volume24h_usd	decimal(30,2)	YES		
-price_change_24h	decimal(10,4)	YES		
-holders	int unsigned	YES		
-sol_price_usd	decimal(20,4)	YES		
-updated_at	datetime	NO		DEFAULT_GENERATED on update CURRENT_TIMESTAMP
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+token_symbol	varchar	16	UNI	NO	&nbsp;	
+token_mint	varchar	64		NO	&nbsp;	
+price_usd	decimal	&nbsp;		YES	&nbsp;	
+market_cap_usd	decimal	&nbsp;		YES	&nbsp;	
+fdv_usd	decimal	&nbsp;		YES	&nbsp;	
+liquidity_usd	decimal	&nbsp;		YES	&nbsp;	
+volume24h_usd	decimal	&nbsp;		YES	&nbsp;	
+price_change_24h	decimal	&nbsp;		YES	&nbsp;	
+holders	int	&nbsp;		YES	&nbsp;	
+sol_price_usd	decimal	&nbsp;		YES	&nbsp;	
+updated_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
 Table: mg_moog_holders
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-wallet	varchar(64)	NO	UNI	
-raw_amount	decimal(40,0)	NO		
-ui_amount	decimal(30,9)	NO		
-percent	decimal(10,6)	YES		
-token_account	varchar(64)	YES		
-updated_at	datetime	NO		
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+wallet	varchar	64	UNI	NO	&nbsp;	
+raw_amount	decimal	&nbsp;		NO	&nbsp;	
+ui_amount	decimal	&nbsp;		NO	&nbsp;	
+percent	decimal	&nbsp;		YES	&nbsp;	
+token_account	varchar	64		YES	&nbsp;	
+updated_at	datetime	&nbsp;		NO	&nbsp;	
 Table: mg_moog_og_buyers
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-wallet	varchar(64)	NO	UNI	
-first_buy_time	datetime	NO		
-first_buy_amount	decimal(30,9)	NO		
-total_bought	decimal(30,9)	NO		
-total_sold	decimal(30,9)	NO		
-current_balance	decimal(30,9)	NO		
-buy_tx_count	int unsigned	NO		
-sell_tx_count	int unsigned	NO		
-is_eligible	tinyint(1)	NO		
-og_tier	tinyint unsigned	NO		
-label_tags	varchar(255)	YES		
-exclude_reason	varchar(255)	YES		
-notes	text	YES		
-snapshot_at	datetime	NO		DEFAULT_GENERATED
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+wallet	varchar	64	UNI	NO	&nbsp;	
+first_buy_time	datetime	&nbsp;		NO	&nbsp;	
+first_buy_amount	decimal	&nbsp;		NO	&nbsp;	
+total_bought	decimal	&nbsp;		NO	&nbsp;	
+total_sold	decimal	&nbsp;		NO	&nbsp;	
+current_balance	decimal	&nbsp;		NO	&nbsp;	
+buy_tx_count	int	&nbsp;		NO	&nbsp;	
+sell_tx_count	int	&nbsp;		NO	&nbsp;	
+is_eligible	tinyint	&nbsp;		NO	0	
+og_tier	tinyint	&nbsp;		NO	0	
+label_tags	varchar	255		YES	&nbsp;	
+exclude_reason	varchar	255		YES	&nbsp;	
+notes	text	65535		YES	&nbsp;	
+snapshot_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
 Table: mg_moog_og_rewards
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-wallet	varchar(64)	NO	UNI	
-planned_amount	decimal(30,9)	NO		
-tx_hash	varchar(120)	YES		
-status	enum('PENDING','SENT','FAILED','CANCELLED')	NO		
-notes	text	YES		
-created_at	datetime	NO		DEFAULT_GENERATED
-updated_at	datetime	NO		DEFAULT_GENERATED on update CURRENT_TIMESTAMP
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+wallet	varchar	64	UNI	NO	&nbsp;	
+planned_amount	decimal	&nbsp;		NO	&nbsp;	
+tx_hash	varchar	120		YES	&nbsp;	
+status	enum	9		NO	PENDING	
+notes	text	65535		YES	&nbsp;	
+created_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
 Table: mg_moog_tx
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-tx_hash	varchar(120)	NO	MUL	
-block_time	datetime	NO		
-from_wallet	varchar(64)	NO		
-to_wallet	varchar(64)	NO		
-amount_moog	decimal(30,9)	NO		
-direction	enum('BUY','SELL','TRANSFER')	NO		
-source	varchar(50)	NO		
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+tx_hash	varchar	120	MUL	NO	&nbsp;	
+block_time	datetime	&nbsp;		NO	&nbsp;	
+from_wallet	varchar	64		NO	&nbsp;	
+to_wallet	varchar	64		NO	&nbsp;	
+amount_moog	decimal	&nbsp;		NO	&nbsp;	
+direction	enum	8		NO	&nbsp;	
+source	varchar	50		NO	manual_import	
 Table: mg_moog_wallets
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-wallet	varchar(64)	NO	UNI	
-label	varchar(100)	YES		
-type	enum('LP_DEV_HOLD','DEV_TREASURY','AIRDROP','EXCHANGE','USER','PROGRAM','UNKNOWN')	NO		
-tags	varchar(255)	YES		
-socials_x	varchar(80)	YES		
-socials_discord	varchar(80)	YES		
-socials_telegram	varchar(80)	YES		
-socials_notes	text	YES		
-created_at	datetime	NO		DEFAULT_GENERATED
-updated_at	datetime	NO		DEFAULT_GENERATED on update CURRENT_TIMESTAMP
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+wallet	varchar	64	UNI	NO	&nbsp;	
+label	varchar	100		YES	&nbsp;	
+type	enum	12		NO	UNKNOWN	
+tags	varchar	255		YES	&nbsp;	
+socials_x	varchar	80		YES	&nbsp;	
+socials_discord	varchar	80		YES	&nbsp;	
+socials_telegram	varchar	80		YES	&nbsp;	
+socials_notes	text	65535		YES	&nbsp;	
+created_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
 Table: mg_sync_log
-Column Name	Data Type	Null	Key	Default	Extra
-id	int unsigned	NO	PRI	auto_increment
-job	varchar(32)	NO	MUL	
-ok	tinyint(1)	NO		
-step	varchar(64)	YES		
-message	text	YES		
-payload_json	text	YES		
-duration_ms	int unsigned	YES		
-created_at	datetime	NO		DEFAULT_GENERATED
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+job	varchar	32	MUL	NO	&nbsp;	
+ok	tinyint	&nbsp;		NO	0	
+step	varchar	64		YES	&nbsp;	
+message	text	65535		YES	&nbsp;	
+payload_json	text	65535		YES	&nbsp;	
+duration_ms	int	&nbsp;		YES	&nbsp;	
+created_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
 Table: moog_airdrops
-Column Name	Data Type	Null	Key	Default	Extra
-id	int	NO	PRI	auto_increment
-wallet_address	varchar(128)	NO	MUL	
-amount	bigint	NO		
-source	varchar(32)	YES		
-name	varchar(128)	YES		
-paid	tinyint(1)	YES		
-verified	tinyint(1)	YES		
-notes	text	YES		
-date_added	timestamp	NO		DEFAULT_GENERATED
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+wallet_address	varchar	128	MUL	NO	&nbsp;	
+amount	bigint	&nbsp;		NO	&nbsp;	
+source	varchar	32		YES	&nbsp;	
+name	varchar	128		YES	&nbsp;	
+paid	tinyint	&nbsp;		YES	0	
+verified	tinyint	&nbsp;		YES	0	
+notes	text	65535		YES	&nbsp;	
+date_added	timestamp	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
+created_at	datetime	&nbsp;		NO	CURRENT_TIMESTAMP	DEFAULT_GENERATED
 Table: system_settings
-Column Name	Data Type	Null	Key	Default	Extra
-id	int	NO	PRI	auto_increment
-setting_key	varchar(100)	NO		
-setting_value	text	YES		
-
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+setting_key	varchar	100		NO	&nbsp;	
+setting_value	text	65535		YES	&nbsp;	
 Table: x_posts
-Column Name	Data Type	Null	Key	Default	Extra
-id	int	NO	PRI	auto_increment
-body	text	NO		
-category	varchar(50)	YES		
-tags	varchar(255)	YES		
-is_active	tinyint(1)	YES		
-times_used	int	YES		
-last_used_at	datetime	YES		
-created_at	datetime	YES		DEFAULT_GENERATED
-notes	varchar(255)	YES		
+Column Name	Data Type	Length	Key	Nullable	Default	Extra Info
+id	int	&nbsp;	PRI	NO	&nbsp;	auto_increment
+body	text	65535		NO	&nbsp;	
+category	varchar	50		YES	general	
+tags	varchar	255		YES		
+is_active	tinyint	&nbsp;		YES	1	
+times_used	int	&nbsp;		YES	0	
+last_used_at	datetime	&nbsp;		YES	&nbsp;	
+created_at	datetime	&nbsp;		YES	CURRENT_TIMESTAMP	DEFAULT_GENERATED
+notes	varchar	255		YES		

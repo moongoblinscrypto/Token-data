@@ -1,397 +1,711 @@
 <?php
 // mooglife/pages/ogrewards.php
+// OG Rewards Control Panel: plan and track OG payouts.
+
 require __DIR__ . '/../includes/db.php';
-$db = moog_db();
 
-/**
- * mg_moog_og_rewards:
- *  id, wallet, planned_amount, tx_hash, status (PENDING/SENT/FAILED/CANCELLED),
- *  notes, created_at, updated_at
- *
- * mg_moog_wallets:
- *  wallet, label, type, tags ...
- */
-
-$flash_success = '';
-$flash_error   = '';
+$db = mg_db();
 
 // ---------------------------------------------------------------------
-// POST actions (add / update)
+// Helpers
 // ---------------------------------------------------------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+function esc($s) {
+    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+}
+
+function ml_dt($dt) {
+    if (!$dt) return '';
+    $ts = strtotime($dt);
+    if ($ts === false) return $dt;
+    return date('Y-m-d H:i', $ts);
+}
+
+function og_status_clean($status) {
+    $status = strtoupper(trim((string)$status));
+    $allowed = ['PENDING', 'SENT', 'FAILED', 'CANCELLED'];
+    if (!in_array($status, $allowed, true)) {
+        return 'PENDING';
+    }
+    return $status;
+}
+
+// ---------------------------------------------------------------------
+// Make sure base tables exist
+// ---------------------------------------------------------------------
+$has_og_buyers  = false;
+$has_og_rewards = false;
+$has_wallets    = false;
+
+$res = $db->query("SHOW TABLES LIKE 'mg_moog_og_buyers'");
+if ($res && $res->num_rows > 0) $has_og_buyers = true;
+if ($res) $res->close();
+
+$res = $db->query("SHOW TABLES LIKE 'mg_moog_og_rewards'");
+if ($res && $res->num_rows > 0) $has_og_rewards = true;
+if ($res) $res->close();
+
+$res = $db->query("SHOW TABLES LIKE 'mg_moog_wallets'");
+if ($res && $res->num_rows > 0) $has_wallets = true;
+if ($res) $res->close();
+
+if (!$has_og_buyers) {
+    ?>
+    <h1>OG Rewards</h1>
+    <div class="card">
+        <p><code>mg_moog_og_buyers</code> table not found.</p>
+        <p class="muted" style="font-size:13px;">
+            Run your OG snapshot script first so we have OG buyers to work with.
+        </p>
+    </div>
+    <?php
+    return;
+}
+
+// If rewards table missing, we can still show OG list, but no edit.
+if (!$has_og_rewards) {
+    ?>
+    <h1>OG Rewards</h1>
+    <div class="card">
+        <p><code>mg_moog_og_rewards</code> table not found.</p>
+        <p class="muted" style="font-size:13px;">
+            According to db-structure it should contain:
+            wallet, planned_amount, tx_hash, status, notes, created_at, updated_at.
+        </p>
+    </div>
+    <?php
+    return;
+}
+
+// ---------------------------------------------------------------------
+// Flash messages
+// ---------------------------------------------------------------------
+$flash = null;
+
+// ---------------------------------------------------------------------
+// POST actions
+// ---------------------------------------------------------------------
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    if ($action === 'add') {
-        $wallet        = trim($_POST['wallet'] ?? '');
-        $planned_amount= trim($_POST['planned_amount'] ?? '');
-        $notes         = trim($_POST['notes'] ?? '');
-        $status        = 'PENDING';
+    // Add/update reward plan for one wallet
+    if ($action === 'save_reward') {
+        $wallet = trim($_POST['wallet'] ?? '');
+        $wallet = substr($wallet, 0, 64);
 
-        if ($wallet === '' || $planned_amount === '' || !is_numeric($planned_amount)) {
-            $flash_error = 'Wallet and numeric amount are required.';
+        $planned_amount = trim($_POST['planned_amount'] ?? '');
+        $status         = og_status_clean($_POST['status'] ?? 'PENDING');
+        $tx_hash        = trim($_POST['tx_hash'] ?? '');
+        $notes          = trim($_POST['notes'] ?? '');
+
+        if ($wallet === '') {
+            $flash = ['ok' => false, 'msg' => 'Missing wallet for reward.'];
         } else {
-            $amt = (float)$planned_amount;
+            if ($planned_amount === '' || !is_numeric($planned_amount)) {
+                $planned_amount = '0';
+            }
 
             $stmt = $db->prepare("
-                INSERT INTO mg_moog_og_rewards
-                    (wallet, planned_amount, status, notes, created_at, updated_at)
-                VALUES
-                    (?, ?, ?, ?, NOW(), NOW())
+                INSERT INTO mg_moog_og_rewards (wallet, planned_amount, tx_hash, status, notes)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    planned_amount = VALUES(planned_amount),
+                    tx_hash        = VALUES(tx_hash),
+                    status         = VALUES(status),
+                    notes          = VALUES(notes)
             ");
             if (!$stmt) {
-                $flash_error = 'DB error: ' . $db->error;
+                $flash = ['ok' => false, 'msg' => 'DB error (save): ' . $db->error];
             } else {
-                $stmt->bind_param('sdss', $wallet, $amt, $status, $notes);
+                // treat decimal as string (MySQL will cast)
+                $stmt->bind_param('sssss', $wallet, $planned_amount, $tx_hash, $status, $notes);
                 if ($stmt->execute()) {
-                    $flash_success = 'OG reward created for wallet ' . substr($wallet, 0, 8) . '...';
+                    $flash = ['ok' => true, 'msg' => 'Reward for wallet saved.'];
                 } else {
-                    $flash_error = 'Insert failed: ' . $stmt->error;
+                    $flash = ['ok' => false, 'msg' => 'Save failed: ' . $stmt->error];
                 }
                 $stmt->close();
             }
         }
     }
 
-    if ($action === 'update_status') {
-        $id     = (int)($_POST['id'] ?? 0);
-        $status = strtoupper(trim($_POST['status'] ?? 'PENDING'));
-        $txhash = trim($_POST['tx_hash'] ?? '');
-        $notes  = trim($_POST['notes'] ?? '');
+    // Delete reward row for a wallet
+    if ($action === 'delete_reward') {
+        $wallet = trim($_POST['wallet'] ?? '');
+        $wallet = substr($wallet, 0, 64);
 
-        if ($id > 0) {
+        if ($wallet === '') {
+            $flash = ['ok' => false, 'msg' => 'Missing wallet for delete.'];
+        } else {
+            $stmt = $db->prepare("DELETE FROM mg_moog_og_rewards WHERE wallet = ? LIMIT 1");
+            if (!$stmt) {
+                $flash = ['ok' => false, 'msg' => 'DB error (delete): ' . $db->error];
+            } else {
+                $stmt->bind_param('s', $wallet);
+                if ($stmt->execute()) {
+                    $flash = ['ok' => true, 'msg' => 'Reward row deleted for wallet.'];
+                } else {
+                    $flash = ['ok' => false, 'msg' => 'Delete failed: ' . $stmt->error];
+                }
+                $stmt->close();
+            }
+        }
+    }
+
+    // Quick mark as SENT (optional separate action)
+    if ($action === 'mark_sent') {
+        $wallet = trim($_POST['wallet'] ?? '');
+        $wallet = substr($wallet, 0, 64);
+        $tx_hash = trim($_POST['tx_hash'] ?? '');
+
+        if ($wallet === '') {
+            $flash = ['ok' => false, 'msg' => 'Missing wallet for mark-sent.'];
+        } else {
             $stmt = $db->prepare("
-                UPDATE mg_moog_og_rewards
-                SET status = ?, tx_hash = ?, notes = ?, updated_at = NOW()
-                WHERE id = ?
+                INSERT INTO mg_moog_og_rewards (wallet, planned_amount, tx_hash, status, notes)
+                VALUES (?, 0, ?, 'SENT', '')
+                ON DUPLICATE KEY UPDATE
+                    status  = 'SENT',
+                    tx_hash = VALUES(tx_hash)
             ");
-            if ($stmt) {
-                $stmt->bind_param('sssi', $status, $txhash, $notes, $id);
+            if (!$stmt) {
+                $flash = ['ok' => false, 'msg' => 'DB error (mark-sent): ' . $db->error];
+            } else {
+                $stmt->bind_param('ss', $wallet, $tx_hash);
                 if ($stmt->execute()) {
-                    $flash_success = "Reward #{$id} updated.";
+                    $flash = ['ok' => true, 'msg' => 'Reward marked as SENT for wallet.'];
                 } else {
-                    $flash_error = 'Update failed: ' . $stmt->error;
+                    $flash = ['ok' => false, 'msg' => 'Mark-sent failed: ' . $stmt->error];
                 }
                 $stmt->close();
-            } else {
-                $flash_error = 'DB error: ' . $db->error;
             }
         }
     }
 }
 
 // ---------------------------------------------------------------------
-// GET actions (simple delete)
+// Filters
 // ---------------------------------------------------------------------
-if (isset($_GET['delete']) && ctype_digit($_GET['delete'])) {
-    $id = (int)$_GET['delete'];
-    $stmt = $db->prepare("DELETE FROM mg_moog_og_rewards WHERE id = ?");
-    if ($stmt) {
-        $stmt->bind_param('i', $id);
-        $stmt->execute();
-        $stmt->close();
-        $flash_success = "Reward #{$id} deleted.";
+$q          = isset($_GET['q']) ? trim($_GET['q']) : '';
+$tierFilter = isset($_GET['tier']) ? trim($_GET['tier']) : '';
+$eligFilter = isset($_GET['elig']) ? trim($_GET['elig']) : 'all'; // all, eligible, ineligible
+$statusFilter = isset($_GET['status']) ? strtoupper(trim($_GET['status'])) : 'ALL'; // ALL / PENDING / SENT / FAILED / CANCELLED / NONE
+$limit      = isset($_GET['limit']) ? (int)$_GET['limit'] : 200;
+if ($limit <= 0 || $limit > 1000) {
+    $limit = 200;
+}
+
+// Distinct tiers
+$tiers = [];
+$res = $db->query("SELECT DISTINCT og_tier FROM mg_moog_og_buyers ORDER BY og_tier ASC");
+if ($res) {
+    while ($row = $res->fetch_assoc()) {
+        $tiers[] = (int)$row['og_tier'];
     }
+    $res->close();
 }
 
 // ---------------------------------------------------------------------
-// summary
+// Summary cards
 // ---------------------------------------------------------------------
 $summary = [
-    'total_records'  => 0,
-    'total_planned'  => 0.0,
-    'total_sent'     => 0.0,
-    'pending_count'  => 0,
-    'sent_count'     => 0,
+    'total_og'      => 0,
+    'eligible_og'   => 0,
+    'rewards_count' => 0,
+    'rewards_sum'   => 0.0,
+    'sent_count'    => 0,
+    'sent_sum'      => 0.0,
 ];
 
 $res = $db->query("
-    SELECT 
-        COUNT(*) AS total_records,
-        COALESCE(SUM(planned_amount),0) AS total_planned,
-        COALESCE(SUM(CASE WHEN status='SENT' THEN planned_amount ELSE 0 END),0) AS total_sent,
-        SUM(status='PENDING') AS pending_count,
-        SUM(status='SENT')    AS sent_count
+    SELECT
+        COUNT(*) AS total_og,
+        SUM(CASE WHEN is_eligible = 1 THEN 1 ELSE 0 END) AS eligible_og
+    FROM mg_moog_og_buyers
+");
+if ($res && ($row = $res->fetch_assoc())) {
+    $summary['total_og']    = (int)$row['total_og'];
+    $summary['eligible_og'] = (int)$row['eligible_og'];
+    $res->close();
+}
+
+$res = $db->query("
+    SELECT
+        COUNT(*) AS c,
+        COALESCE(SUM(planned_amount),0) AS s
     FROM mg_moog_og_rewards
 ");
 if ($res && ($row = $res->fetch_assoc())) {
-    $summary['total_records'] = (int)$row['total_records'];
-    $summary['total_planned'] = (float)$row['total_planned'];
-    $summary['total_sent']    = (float)$row['total_sent'];
-    $summary['pending_count'] = (int)$row['pending_count'];
-    $summary['sent_count']    = (int)$row['sent_count'];
+    $summary['rewards_count'] = (int)$row['c'];
+    $summary['rewards_sum']   = (float)$row['s'];
+    $res->close();
+}
+
+$res = $db->query("
+    SELECT
+        COUNT(*) AS c,
+        COALESCE(SUM(planned_amount),0) AS s
+    FROM mg_moog_og_rewards
+    WHERE status = 'SENT'
+");
+if ($res && ($row = $res->fetch_assoc())) {
+    $summary['sent_count'] = (int)$row['c'];
+    $summary['sent_sum']   = (float)$row['s'];
+    $res->close();
 }
 
 // ---------------------------------------------------------------------
-// filters
+// Build WHERE for main OG list
 // ---------------------------------------------------------------------
-$q      = isset($_GET['q']) ? trim($_GET['q']) : '';
-$status = isset($_GET['status']) ? $_GET['status'] : 'all'; // all, PENDING, SENT, FAILED, CANCELLED;
-$only_no_tx = isset($_GET['no_tx']) && $_GET['no_tx'] === '1';
-
-$statuses = ['PENDING','SENT','FAILED','CANCELLED'];
-
-// ---------------------------------------------------------------------
-// main query
-// ---------------------------------------------------------------------
-$sql = "
-    SELECT 
-        r.id,
-        r.wallet,
-        r.planned_amount,
-        r.tx_hash,
-        r.status,
-        r.notes,
-        r.created_at,
-        r.updated_at,
-        w.label,
-        w.type,
-        w.tags
-    FROM mg_moog_og_rewards r
-    LEFT JOIN mg_moog_wallets w ON w.wallet = r.wallet
-";
-
-$where  = [];
+$where  = '1=1';
+$bind   = '';
 $params = [];
-$types  = '';
 
+// search by wallet, label, label_tags
 if ($q !== '') {
-    $where[] = "(r.wallet LIKE ? OR r.tx_hash LIKE ? OR r.notes LIKE ? OR w.label LIKE ? OR w.tags LIKE ?)";
+    $where .= ' AND (ob.wallet LIKE ? OR w.label LIKE ? OR ob.label_tags LIKE ?)';
     $like = '%' . $q . '%';
-    for ($i = 0; $i < 5; $i++) {
-        $params[] = $like;
-        $types   .= 's';
+    $bind .= 'sss';
+    $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
+}
+
+// tier filter
+if ($tierFilter !== '' && $tierFilter !== 'all') {
+    $tierInt = (int)$tierFilter;
+    if ($tierInt > 0) {
+        $where .= ' AND ob.og_tier = ?';
+        $bind  .= 'i';
+        $params[] = $tierInt;
     }
 }
 
-if (in_array($status, $statuses, true)) {
-    $where[] = "r.status = ?";
-    $params[] = $status;
-    $types   .= 's';
+// eligibility filter
+if ($eligFilter === 'eligible') {
+    $where .= ' AND ob.is_eligible = 1';
+} elseif ($eligFilter === 'ineligible') {
+    $where .= ' AND ob.is_eligible = 0';
 }
 
-if ($only_no_tx) {
-    $where[] = "(r.tx_hash IS NULL OR r.tx_hash = '')";
+// status filter
+// We have LEFT JOIN mg_moog_og_rewards r
+if ($statusFilter === 'NONE') {
+    $where .= ' AND r.status IS NULL';
+} elseif ($statusFilter !== 'ALL' && $statusFilter !== '') {
+    $where .= ' AND r.status = ?';
+    $bind  .= 's';
+    $params[] = $statusFilter;
 }
 
-if ($where) {
-    $sql .= " WHERE " . implode(' AND ', $where);
-}
+// ---------------------------------------------------------------------
+// Main query: OG buyers + wallets + rewards
+// ---------------------------------------------------------------------
+$sql = "
+    SELECT
+        ob.wallet,
+        ob.first_buy_time,
+        ob.first_buy_amount,
+        ob.total_bought,
+        ob.total_sold,
+        ob.current_balance,
+        ob.buy_tx_count,
+        ob.sell_tx_count,
+        ob.is_eligible,
+        ob.og_tier,
+        ob.label_tags,
+        ob.exclude_reason,
+        ob.notes       AS og_notes,
+        ob.snapshot_at,
 
-$sql .= " ORDER BY r.status ASC, r.created_at ASC, r.id ASC";
+        w.label        AS wallet_label,
+        w.type         AS wallet_type,
+
+        r.id           AS reward_id,
+        r.planned_amount,
+        r.tx_hash,
+        r.status       AS reward_status,
+        r.notes        AS reward_notes,
+        r.created_at   AS reward_created_at,
+        r.updated_at   AS reward_updated_at
+    FROM mg_moog_og_buyers ob
+    LEFT JOIN mg_moog_wallets   w ON w.wallet = ob.wallet
+    LEFT JOIN mg_moog_og_rewards r ON r.wallet = ob.wallet
+    WHERE {$where}
+    ORDER BY ob.og_tier ASC, ob.is_eligible DESC, ob.first_buy_time ASC
+    LIMIT ?
+";
+
+$bind .= 'i';
+$params[] = $limit;
 
 $stmt = $db->prepare($sql);
-if ($stmt === false) {
-    die("Query error: " . $db->error);
+if (!$stmt) {
+    die('SQL prepare failed: ' . esc($db->error));
 }
-if ($params) {
-    $stmt->bind_param($types, ...$params);
+
+$bindParams   = [];
+$bindParams[] = &$bind;
+foreach ($params as $k => $v) {
+    $bindParams[] = &$params[$k];
 }
+call_user_func_array([$stmt, 'bind_param'], $bindParams);
+
 $stmt->execute();
-$result = $stmt->get_result();
+$res = $stmt->get_result();
 
 $rows = [];
-while ($row = $result->fetch_assoc()) {
+while ($row = $res->fetch_assoc()) {
     $rows[] = $row;
 }
 $stmt->close();
 
+$totalRows = count($rows);
+
 // ---------------------------------------------------------------------
-// helpers
+// Render
 // ---------------------------------------------------------------------
-function reward_status_badge($status) {
-    $status = strtoupper((string)$status);
-    switch ($status) {
-        case 'PENDING':
-            return '<span class="pill" style="background:#f97316;">PENDING</span>';
-        case 'SENT':
-            return '<span class="pill" style="background:#16a34a;">SENT</span>';
-        case 'FAILED':
-            return '<span class="pill" style="background:#b91c1c;">FAILED</span>';
-        case 'CANCELLED':
-            return '<span class="pill" style="background:#4b5563;">CANCELLED</span>';
-        default:
-            return '<span class="pill" style="background:#4b5563;">UNKNOWN</span>';
-    }
-}
-
-function wallet_label_line($wallet, $label, $type) {
-    // clickable wallet with optional label + type
-    $link = wallet_link($wallet, $label ?: null, true);
-
-    if ($label) {
-        $typeText = $type ? ' • ' . htmlspecialchars($type) : '';
-        return $link . '<br><span class="pill" style="background:#111827;">'
-             . htmlspecialchars($label) . $typeText . '</span>';
-    }
-
-    return $link;
-}
-
 ?>
 <h1>OG Rewards</h1>
 <p class="muted">
-    Planned OG reward payouts from <code>mg_moog_og_rewards</code>, joined with labels from <code>mg_moog_wallets</code>.
+    Plan and track OG reward payouts from <code>mg_moog_og_rewards</code>, joined with OG snapshot and wallet labels.
 </p>
 
-<?php if ($flash_success): ?>
-    <div style="margin:10px 0;padding:8px 10px;border-radius:6px;background:#022c22;color:#bbf7d0;">
-        <?php echo htmlspecialchars($flash_success); ?>
-    </div>
-<?php elseif ($flash_error): ?>
-    <div style="margin:10px 0;padding:8px 10px;border-radius:6px;background:#450a0a;color:#fecaca;">
-        <?php echo htmlspecialchars($flash_error); ?>
+<?php if ($flash !== null): ?>
+    <div style="margin-bottom:12px;padding:8px 10px;border-radius:6px;
+        background:<?php echo $flash['ok'] ? '#022c22' : '#450a0a'; ?>;
+        color:<?php echo $flash['ok'] ? '#bbf7d0' : '#fecaca'; ?>;
+        font-size:13px;">
+        <?php echo esc($flash['msg']); ?>
     </div>
 <?php endif; ?>
 
 <div class="cards" style="margin-bottom:20px;">
     <div class="card">
-        <div class="card-label">Total Reward Records</div>
-        <div class="card-value"><?php echo number_format($summary['total_records']); ?></div>
+        <div class="card-label">Total OG Wallets</div>
+        <div class="card-value"><?php echo number_format($summary['total_og']); ?></div>
+        <div class="card-sub">Rows in <code>mg_moog_og_buyers</code>.</div>
     </div>
+
     <div class="card">
-        <div class="card-label">Total Planned (MOOG)</div>
-        <div class="card-value"><?php echo number_format($summary['total_planned'], 3); ?></div>
+        <div class="card-label">Eligible OGs</div>
+        <div class="card-value"><?php echo number_format($summary['eligible_og']); ?></div>
+        <div class="card-sub"><code>is_eligible = 1</code>.</div>
     </div>
+
     <div class="card">
-        <div class="card-label">Total Sent (MOOG)</div>
-        <div class="card-value"><?php echo number_format($summary['total_sent'], 3); ?></div>
+        <div class="card-label">Rewards Planned</div>
+        <div class="card-value"><?php echo number_format($summary['rewards_count']); ?></div>
+        <div class="card-sub">
+            Total planned: <?php echo number_format($summary['rewards_sum'], 0); ?> MOOG
+        </div>
     </div>
+
     <div class="card">
-        <div class="card-label">Pending / Sent</div>
-        <div class="card-value">
-            <?php echo number_format($summary['pending_count']); ?>
-            /
-            <?php echo number_format($summary['sent_count']); ?>
+        <div class="card-label">Rewards Sent</div>
+        <div class="card-value"><?php echo number_format($summary['sent_count']); ?></div>
+        <div class="card-sub">
+            Total sent: <?php echo number_format($summary['sent_sum'], 0); ?> MOOG
         </div>
     </div>
 </div>
 
-<!-- New OG Reward form -->
-<div class="card" style="margin-bottom:20px;max-width:700px;">
-    <h3 style="margin-top:0;">New OG Reward</h3>
-    <form method="post">
-        <input type="hidden" name="action" value="add">
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-            <div style="flex:2 1 260px;">
-                <label>Wallet</label><br>
-                <input type="text" name="wallet"
-                       placeholder="Recipient wallet address"
-                       style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;">
+<div class="card" style="margin-bottom:20px;">
+    <h2 style="margin-top:0;">Filters</h2>
+    <form method="get">
+        <input type="hidden" name="p" value="ogrewards">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
+
+            <div>
+                <label style="font-size:12px;display:block;margin-bottom:2px;">Search</label>
+                <input
+                    type="text"
+                    name="q"
+                    value="<?php echo esc($q); ?>"
+                    placeholder="Wallet, label, label tags..."
+                    style="width:220px;padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                >
             </div>
-            <div style="flex:1 1 160px;">
-                <label>Amount (MOOG)</label><br>
-                <input type="text" name="planned_amount"
-                       placeholder="e.g. 50000"
-                       style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;">
+
+            <div>
+                <label style="font-size:12px;display:block;margin-bottom:2px;">Tier</label>
+                <select
+                    name="tier"
+                    style="padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                >
+                    <option value="all">All</option>
+                    <?php foreach ($tiers as $t): ?>
+                        <option value="<?php echo (int)$t; ?>" <?php if ((string)$t === $tierFilter) echo 'selected'; ?>>
+                            Tier <?php echo (int)$t; ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
-        </div>
-        <div style="margin-top:8px;">
-            <label>Notes</label><br>
-            <textarea name="notes" rows="2"
-                      style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"></textarea>
-        </div>
-        <div style="margin-top:10px;">
-            <button type="submit"
-                    style="padding:6px 12px;border-radius:6px;border:none;background:#22c55e;color:#020617;cursor:pointer;">
-                Add Reward
-            </button>
+
+            <div>
+                <label style="font-size:12px;display:block;margin-bottom:2px;">Eligibility</label>
+                <select
+                    name="elig"
+                    style="padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                >
+                    <option value="all"       <?php if ($eligFilter === 'all') echo 'selected'; ?>>All</option>
+                    <option value="eligible"  <?php if ($eligFilter === 'eligible') echo 'selected'; ?>>Eligible</option>
+                    <option value="ineligible"<?php if ($eligFilter === 'ineligible') echo 'selected'; ?>>Ineligible</option>
+                </select>
+            </div>
+
+            <div>
+                <label style="font-size:12px;display:block;margin-bottom:2px;">Reward Status</label>
+                <select
+                    name="status"
+                    style="padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                >
+                    <?php
+                    $statuses = ['ALL','PENDING','SENT','FAILED','CANCELLED','NONE'];
+                    foreach ($statuses as $s):
+                    ?>
+                        <option value="<?php echo $s; ?>" <?php if ($statusFilter === $s) echo 'selected'; ?>>
+                            <?php echo $s; ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div>
+                <label style="font-size:12px;display:block;margin-bottom:2px;">Limit</label>
+                <input
+                    type="number"
+                    name="limit"
+                    value="<?php echo esc($limit); ?>"
+                    min="50"
+                    max="1000"
+                    step="50"
+                    style="width:90px;padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                >
+            </div>
+
+            <div>
+                <button type="submit"
+                        style="padding:6px 12px;border-radius:6px;border:none;background:#22c55e;color:#022c22;font-weight:600;cursor:pointer;">
+                    Apply
+                </button>
+            </div>
+
         </div>
     </form>
 </div>
 
-<form method="get" class="search-row">
-    <input type="hidden" name="p" value="ogrewards">
-    <input type="text" name="q" placeholder="Search wallet, label, notes, tx hash..." value="<?php echo htmlspecialchars($q); ?>">
+<div class="card">
+    <h2 style="margin-top:0;">OG Reward List</h2>
+    <p class="muted" style="font-size:12px;margin-bottom:6px;">
+        Loaded <?php echo number_format($totalRows); ?> OG wallets.  
+        Each row lets you set a reward amount, status, tx hash, and notes, then save/update.
+    </p>
 
-    <select name="status" style="padding:6px 8px;border-radius:6px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;">
-        <option value="all" <?php if($status==='all') echo 'selected'; ?>>All statuses</option>
-        <?php foreach ($statuses as $st): ?>
-            <option value="<?php echo $st; ?>" <?php if($status===$st) echo 'selected'; ?>>
-                <?php echo $st; ?>
-            </option>
-        <?php endforeach; ?>
-    </select>
-
-    <label style="font-size:13px;color:#e5e7eb;display:flex;align-items:center;gap:4px;">
-        <input type="checkbox" name="no_tx" value="1" <?php if($only_no_tx) echo 'checked'; ?>>
-        No Tx hash
-    </label>
-
-    <button type="submit">Filter</button>
-</form>
-
-<table class="data">
-    <thead>
-        <tr>
-            <th>#</th>
-            <th>Wallet</th>
-            <th>Amount (MOOG)</th>
-            <th>Status</th>
-            <th>Tx Hash</th>
-            <th>Notes</th>
-            <th>Created</th>
-            <th>Updated</th>
-            <th style="width:130px;">Actions</th>
-        </tr>
-    </thead>
-    <tbody>
-    <?php if (!$rows): ?>
-        <tr><td colspan="9">No OG rewards found for this filter.</td></tr>
-    <?php else: ?>
-        <?php $i = 1; foreach ($rows as $r): ?>
+    <div style="overflow-x:auto;">
+        <table class="data" style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
             <tr>
-                <td><?php echo $i++; ?></td>
-                <td><?php echo wallet_label_line($r['wallet'], $r['label'] ?? '', $r['type'] ?? ''); ?></td>
-                <td><?php echo number_format((float)$r['planned_amount'], 3); ?></td>
-                <td><?php echo reward_status_badge($r['status']); ?></td>
-                <td>
-                    <?php if (!empty($r['tx_hash'])): ?>
-                        <div style="max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                            <code><?php echo htmlspecialchars($r['tx_hash']); ?></code>
-                        </div>
-                    <?php endif; ?>
-                </td>
-                <td><?php echo htmlspecialchars($r['notes'] ?? ''); ?></td>
-                <td><?php echo htmlspecialchars($r['created_at']); ?></td>
-                <td><?php echo htmlspecialchars($r['updated_at']); ?></td>
-                <td>
-                    <form method="post" style="display:flex;flex-direction:column;gap:4px;">
-                        <input type="hidden" name="action" value="update_status">
-                        <input type="hidden" name="id" value="<?php echo (int)$r['id']; ?>">
-
-                        <input type="text" name="tx_hash"
-                               placeholder="Tx hash"
-                               value="<?php echo htmlspecialchars($r['tx_hash'] ?? ''); ?>"
-                               style="width:100%;padding:3px 5px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:11px;">
-
-                        <select name="status" style="padding:3px 5px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:11px;">
-                            <?php foreach ($statuses as $st): ?>
-                                <option value="<?php echo $st; ?>" <?php if($r['status']===$st) echo 'selected'; ?>>
-                                    <?php echo $st; ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-
-                        <input type="text" name="notes"
-                               placeholder="Notes"
-                               value="<?php echo htmlspecialchars($r['notes'] ?? ''); ?>"
-                               style="width:100%;padding:3px 5px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:11px;">
-
-                        <div style="display:flex;gap:4px;margin-top:3px;">
-                            <button type="submit"
-                                    style="flex:1;padding:3px 5px;border-radius:4px;border:none;background:#22c55e;color:#020617;font-size:11px;cursor:pointer;">
-                                Save
-                            </button>
-                            <a href="?p=ogrewards&delete=<?php echo (int)$r['id']; ?>"
-                               onclick="return confirm('Delete reward #<?php echo (int)$r['id']; ?>?');"
-                               style="flex:1;text-align:center;padding:3px 5px;border-radius:4px;background:#b91c1c;color:#f9fafb;font-size:11px;text-decoration:none;">
-                                Delete
-                            </a>
-                        </div>
-                    </form>
-                </td>
+                <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Wallet / Label</th>
+                <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Tier / Eligible</th>
+                <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">OG Stats</th>
+                <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Reward Plan</th>
+                <th style="text-align:left;padding:6px;border-bottom:1px solid #1f2937;">Actions</th>
             </tr>
-        <?php endforeach; ?>
-    <?php endif; ?>
-    </tbody>
-</table>
+            </thead>
+            <tbody>
+            <?php if (!$rows): ?>
+                <tr>
+                    <td colspan="5" style="padding:8px;border-bottom:1px solid #111827;">
+                        No OG buyers match these filters.
+                    </td>
+                </tr>
+            <?php else: ?>
+                <?php foreach ($rows as $r): ?>
+                    <?php
+                    $isEligible  = ((int)$r['is_eligible'] === 1);
+                    $rewardId    = $r['reward_id'];
+                    $rewardStat  = $r['reward_status'] ?? '';
+                    $rewardPlanned = $r['planned_amount'] ?? null;
+                    $rewardNotes   = $r['reward_notes'] ?? '';
+                    $rewardTx      = $r['tx_hash'] ?? '';
+                    ?>
+                    <tr>
+                        <!-- Wallet / Label -->
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:12px;vertical-align:top;">
+                            <div>
+                                <?php echo wallet_link($r['wallet'], $r['wallet_label'] ?: null, true); ?>
+                            </div>
+                            <?php if ($r['wallet_label'] !== '' || $r['wallet_type'] !== ''): ?>
+                                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">
+                                    <?php if ($r['wallet_label'] !== ''): ?>
+                                        <span><?php echo esc($r['wallet_label']); ?></span>
+                                    <?php endif; ?>
+                                    <?php if ($r['wallet_type'] !== ''): ?>
+                                        &nbsp;·&nbsp;<span><?php echo esc($r['wallet_type']); ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($r['label_tags'] !== ''): ?>
+                                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">
+                                    Tags: <?php echo esc($r['label_tags']); ?>
+                                </div>
+                            <?php endif; ?>
+                        </td>
+
+                        <!-- Tier / Eligible -->
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:12px;vertical-align:top;">
+                            <div>
+                                Tier <?php echo (int)$r['og_tier']; ?>
+                                <?php if ($isEligible): ?>
+                                    <span class="pill" style="margin-left:4px;">ELIGIBLE</span>
+                                <?php else: ?>
+                                    <span class="pill" style="margin-left:4px;background:#4b5563;">NOT ELIGIBLE</span>
+                                <?php endif; ?>
+                            </div>
+                            <?php if ($r['exclude_reason'] !== ''): ?>
+                                <div style="font-size:11px;color:#f97316;margin-top:2px;">
+                                    Exclude: <?php echo esc($r['exclude_reason']); ?>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($r['snapshot_at']): ?>
+                                <div style="font-size:10px;color:#9ca3af;margin-top:4px;">
+                                    Snapshot: <?php echo esc(ml_dt($r['snapshot_at'])); ?>
+                                </div>
+                            <?php endif; ?>
+                        </td>
+
+                        <!-- OG stats -->
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:11px;vertical-align:top;">
+                            <div>
+                                Current: <?php echo number_format((float)$r['current_balance'], 3); ?> MOOG
+                            </div>
+                            <div>
+                                Total Bought: <?php echo number_format((float)$r['total_bought'], 3); ?> MOOG
+                            </div>
+                            <div>
+                                Total Sold: <?php echo number_format((float)$r['total_sold'], 3); ?> MOOG
+                            </div>
+                            <div>
+                                Buys: <?php echo (int)$r['buy_tx_count']; ?> ·
+                                Sells: <?php echo (int)$r['sell_tx_count']; ?>
+                            </div>
+                            <?php if ($r['og_notes'] !== ''): ?>
+                                <div style="margin-top:4px;color:#9ca3af;">
+                                    Notes: <?php echo esc($r['og_notes']); ?>
+                                </div>
+                            <?php endif; ?>
+                        </td>
+
+                        <!-- Reward Plan -->
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:11px;vertical-align:top;">
+                            <form method="post" style="margin:0;">
+                                <input type="hidden" name="action" value="save_reward">
+                                <input type="hidden" name="wallet" value="<?php echo esc($r['wallet']); ?>">
+
+                                <div style="margin-bottom:4px;">
+                                    <label style="font-size:11px;display:block;margin-bottom:1px;">Planned Amount (MOOG)</label>
+                                    <input
+                                        type="text"
+                                        name="planned_amount"
+                                        value="<?php echo $rewardPlanned !== null ? esc($rewardPlanned) : ''; ?>"
+                                        placeholder="0"
+                                        style="width:100%;padding:4px 6px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                                    >
+                                </div>
+
+                                <div style="margin-bottom:4px;">
+                                    <label style="font-size:11px;display:block;margin-bottom:1px;">Status</label>
+                                    <select
+                                        name="status"
+                                        style="width:100%;padding:4px 6px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;font-size:11px;"
+                                    >
+                                        <?php
+                                        $slist = ['PENDING','SENT','FAILED','CANCELLED'];
+                                        $curS  = $rewardStat ?: 'PENDING';
+                                        foreach ($slist as $s):
+                                        ?>
+                                            <option value="<?php echo $s; ?>" <?php if ($curS === $s) echo 'selected'; ?>>
+                                                <?php echo $s; ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+
+                                <div style="margin-bottom:4px;">
+                                    <label style="font-size:11px;display:block;margin-bottom:1px;">Tx Hash</label>
+                                    <input
+                                        type="text"
+                                        name="tx_hash"
+                                        value="<?php echo esc($rewardTx); ?>"
+                                        placeholder="optional"
+                                        style="width:100%;padding:4px 6px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                                    >
+                                </div>
+
+                                <div style="margin-bottom:4px;">
+                                    <label style="font-size:11px;display:block;margin-bottom:1px;">Notes</label>
+                                    <input
+                                        type="text"
+                                        name="notes"
+                                        value="<?php echo esc($rewardNotes); ?>"
+                                        placeholder="internal note"
+                                        style="width:100%;padding:4px 6px;border-radius:4px;border:1px solid #1f2937;background:#020617;color:#e5e7eb;"
+                                    >
+                                </div>
+
+                                <?php if ($rewardId): ?>
+                                    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px;">
+                                        Reward row #<?php echo (int)$rewardId; ?><br>
+                                        Created: <?php echo esc(ml_dt($r['reward_created_at'])); ?><br>
+                                        Updated: <?php echo esc(ml_dt($r['reward_updated_at'])); ?>
+                                    </div>
+                                <?php endif; ?>
+
+                                <button type="submit"
+                                        style="padding:4px 8px;border-radius:4px;border:none;background:#3b82f6;color:#f9fafb;font-size:11px;font-weight:600;cursor:pointer;">
+                                    Save
+                                </button>
+                            </form>
+                        </td>
+
+                        <!-- Actions -->
+                        <td style="padding:6px;border-bottom:1px solid #111827;font-size:11px;vertical-align:top;">
+                            <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                <a href="?p=wallet&amp;wallet=<?php echo esc($r['wallet']); ?>"
+                                   style="padding:3px 8px;border-radius:4px;background:#22c55e;color:#022c22;text-decoration:none;font-size:11px;">
+                                    Wallet
+                                </a>
+                                <a href="?p=ogbuyers&amp;q=<?php echo esc($r['wallet']); ?>"
+                                   style="padding:3px 8px;border-radius:4px;background:#0ea5e9;color:#e0f2fe;text-decoration:none;font-size:11px;">
+                                    OG Record
+                                </a>
+
+                                <form method="post" style="margin:0;" onsubmit="return confirm('Mark reward as SENT for this wallet?');">
+                                    <input type="hidden" name="action" value="mark_sent">
+                                    <input type="hidden" name="wallet" value="<?php echo esc($r['wallet']); ?>">
+                                    <input type="hidden" name="tx_hash" value="<?php echo esc($rewardTx); ?>">
+                                    <button type="submit"
+                                            style="padding:3px 8px;border-radius:4px;border:none;background:#16a34a;color:#ecfdf5;font-size:11px;cursor:pointer;">
+                                        Mark Sent
+                                    </button>
+                                </form>
+
+                                <?php if ($rewardId): ?>
+                                    <form method="post" style="margin:0;" onsubmit="return confirm('Delete reward row for this wallet?');">
+                                        <input type="hidden" name="action" value="delete_reward">
+                                        <input type="hidden" name="wallet" value="<?php echo esc($r['wallet']); ?>">
+                                        <button type="submit"
+                                                style="padding:3px 8px;border-radius:4px;border:none;background:#b91c1c;color:#fee2e2;font-size:11px;cursor:pointer;">
+                                            Delete
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
+                            </div>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
