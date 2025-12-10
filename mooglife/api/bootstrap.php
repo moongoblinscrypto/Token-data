@@ -1,7 +1,7 @@
 <?php
 // mooglife/api/bootstrap.php
 // Common bootstrap for all Moog API endpoints.
-// Now with API key tiers + daily limits, but still friendly for localhost.
+// Includes API key tiers + daily limits, with localhost-friendly behavior.
 
 declare(strict_types=1);
 
@@ -358,6 +358,67 @@ function moog_api_current_key()
     return $GLOBALS['MOOG_API_AUTH'] ?? null;
 }
 
+/**
+ * Get the effective tier for this request.
+ * - internal/pro/free come from API key
+ * - anonymous: external without key (when allowed)
+ * - localhost without key: treated as internal (full power for dev)
+ */
+function moog_api_effective_tier(): string
+{
+    $auth     = moog_api_current_key();
+    $envLocal = $GLOBALS['MOOG_API_ENV_LOCAL'] ?? false;
+
+    if ($auth) {
+        return strtolower((string)($auth['tier'] ?? 'free'));
+    }
+
+    if ($envLocal) {
+        return 'internal'; // localhost, no key → treat as internal
+    }
+
+    return 'anonymous';
+}
+
+/**
+ * Cap a requested limit based on tier.
+ *
+ * @param int $requested
+ * @param array<string,int> $maxByTier
+ * @param bool $hardBlockIfTooHigh  If true, return 402 instead of clamping when exceeded for weak tiers.
+ * @return int
+ */
+function moog_api_cap_limit(int $requested, array $maxByTier, bool $hardBlockIfTooHigh = false): int
+{
+    $tier = moog_api_effective_tier();
+
+    // choose max by tier, with some sane defaults
+    $max = $maxByTier[$tier] ?? ($maxByTier['default'] ?? 200);
+
+    if ($max <= 0) {
+        $max = 200;
+    }
+
+    if ($requested <= $max) {
+        return $requested;
+    }
+
+    // For stronger tiers we can just clamp, for weaker we might block
+    if ($hardBlockIfTooHigh && in_array($tier, ['free', 'anonymous'], true)) {
+        api_error(
+            'Requested limit exceeds allowed maximum for this tier. Upgrade to PRO for higher limits.',
+            402,
+            [
+                'tier'      => $tier,
+                'requested' => $requested,
+                'max'       => $max,
+            ]
+        );
+    }
+
+    return $max;
+}
+
 // -------------------------
 // API key enforcement logic
 // -------------------------
@@ -365,6 +426,9 @@ function moog_api_current_key()
 $settings   = moog_api_load_settings($db);
 $remoteIp   = $_SERVER['REMOTE_ADDR'] ?? '';
 $envIsLocal = in_array($remoteIp, ['127.0.0.1', '::1'], true);
+
+// Expose env flag to endpoints
+$GLOBALS['MOOG_API_ENV_LOCAL'] = $envIsLocal;
 
 // Default behavior:
 // - On localhost: API keys are optional (for development).
