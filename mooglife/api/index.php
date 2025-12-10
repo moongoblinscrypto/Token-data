@@ -3,6 +3,9 @@
 // Human-readable API index for developers.
 
 require_once __DIR__ . '/../includes/db.php';
+require_once __DIR__ . '/bootstrap.php'; // so we can show tier info
+
+$tier = moog_api_effective_tier();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -18,11 +21,11 @@ require_once __DIR__ . '/../includes/db.php';
         }
         h1 {
             color:#7dd3fc;
-            margin-bottom:10px;
+            margin-bottom:6px;
         }
         .desc {
             color:#94a3b8;
-            margin-bottom:25px;
+            margin-bottom:18px;
             font-size:14px;
         }
         .endpoint {
@@ -48,22 +51,32 @@ require_once __DIR__ . '/../includes/db.php';
             color:#f1f5f9;
             font-size:13px;
         }
+        .tier-pill {
+            display:inline-block;
+            padding:2px 8px;
+            border-radius:999px;
+            font-size:11px;
+            margin-top:4px;
+            background:#1f2937;
+        }
     </style>
 </head>
 <body>
 
-<h1>Moog API v1</h1>
+<h1>Moog API v1 (Internal Layer)</h1>
 <div class="desc">
-    Public &amp; internal API endpoints provided by the Mooglife system.<br>
-    All responses are returned as JSON.<br>
-    No authentication is needed for local development (this will change later).
+    JSON endpoints served by the Mooglife system.<br>
+    This layer powers dashboards and the public <code>/api/v1/</code> routes.<br>
+    Current effective tier: <span class="tier-pill"><?php echo htmlspecialchars($tier, ENT_QUOTES, 'UTF-8'); ?></span>
 </div>
 
 <div class="endpoint">
-    <h2>Base URL</h2>
-    <p>
-        On this server, endpoints are available under:<br>
-        <code>http://localhost/mooglife/api/</code>
+    <h2>Versioned Public API</h2>
+    <p>Production-facing entrypoint for external devs:</p>
+    <p><a href="v1/index.php">/api/v1/index.php</a></p>
+    <p style="font-size:12px;color:#94a3b8;">
+        Use this for anything you want to publish externally (widgets, bots, dashboards).
+        It wraps the internal endpoints below.
     </p>
 </div>
 
@@ -75,18 +88,18 @@ require_once __DIR__ . '/../includes/db.php';
 
 <div class="endpoint">
     <h2>Market API</h2>
-    <p>Latest snapshot or full history.</p>
+    <p>Latest price / FDV / liquidity snapshot or historical series.</p>
     <p><a href="market.php">market.php</a></p>
-    <p><code>?mode=history&amp;limit=200</code></p>
+    <p><code>?mode=history&amp;limit=200</code> – PRO / INTERNAL only for external callers.</p>
 </div>
 
 <div class="endpoint">
     <h2>Holders API</h2>
-    <p>Top wallets by bag size or a single holder lookup.</p>
+    <p>Top MOOG holders or single-wallet profile.</p>
     <p><a href="holders.php">holders.php</a></p>
     <p>
-        <code>?limit=100</code> — Top holders<br>
-        <code>?wallet=YOUR_WALLET</code> — Single wallet lookup
+        <code>?limit=100</code> – top holders (tier-capped)<br>
+        <code>?wallet=YOUR_WALLET</code> – profile if present
     </p>
 </div>
 
@@ -103,43 +116,47 @@ require_once __DIR__ . '/../includes/db.php';
 </div>
 
 <div class="endpoint">
-    <h2>OG Buyers API</h2>
-    <p>Complete OG buyers list or single wallet record.</p>
-    <p><a href="og_buyers.php">og_buyers.php</a></p>
-    <p><code>?wallet=YOUR_WALLET</code></p>
+    <h2>Airdrops API</h2>
+    <p>Airdrop records and per-wallet / global summaries.</p>
+    <p><a href="airdrops.php">airdrops.php</a></p>
+    <p>
+        <code>?limit=200</code> – latest rows (tier-capped)<br>
+        <code>?wallet=YOUR_WALLET</code> – airdrops for that wallet<br>
+        <code>?wallet=YOUR_WALLET&amp;summary=1</code> – per-wallet summary (PRO+)<br>
+        <code>?summary=1&amp;limit=50</code> – global summary (PRO+)
+    </p>
 </div>
 
 <div class="endpoint">
-    <h2>Airdrops API</h2>
-    <p>Airdrop records and per-wallet totals.</p>
-    <p><a href="airdrops.php">airdrops.php</a></p>
+    <h2>OG Buyers API</h2>
+    <p>Flexible OG buyers view with wallet filter.</p>
+    <p><a href="og_buyers.php">og_buyers.php</a></p>
     <p>
-        <code>?limit=200</code> — latest N airdrops<br>
-        <code>?wallet=YOUR_WALLET</code> — airdrops for that wallet<br>
-        <code>?wallet=YOUR_WALLET&amp;summary=1</code> — totals for that wallet<br>
-        <code>?summary=1&amp;limit=50</code> — global per-wallet summary (top recipients)
+        <code>?limit=100</code> – latest OG buyers (tier-capped)<br>
+        <code>?wallet=YOUR_WALLET</code> – filter by wallet (if wallet column exists)
     </p>
 </div>
 
 <div class="endpoint">
     <h2>OG Rewards API</h2>
-    <p>OG rewards table with flexible filters.</p>
+    <p>Flexible OG rewards view with wallet / type / status filters.</p>
     <p><a href="og_rewards.php">og_rewards.php</a></p>
     <p>
-        <code>?limit=200</code> — latest N rewards<br>
-        <code>?wallet=YOUR_WALLET</code> — rewards for that wallet (if wallet column exists)<br>
-        <code>?type=REWARD_TYPE</code> — filter by <code>reward_type</code> (if present)<br>
-        <code>?status=paid</code> — filter by <code>status</code> (if present)
+        <code>?limit=100</code> – latest rewards (tier-capped)<br>
+        <code>?wallet=YOUR_WALLET</code> – if wallet column exists<br>
+        <code>?type=SOMETHING</code> – if reward_type / type column exists<br>
+        <code>?status=paid</code> – if status column exists
     </p>
 </div>
 
 <hr style="border:0;border-top:1px solid #1e293b;margin:35px 0;">
 
-<h2 style="color:#7dd3fc;margin-top:0;">Coming Soon</h2>
+<h2 style="color:#7dd3fc;margin-top:0;">Notes &amp; Roadmap</h2>
 <ul style="color:#94a3b8;font-size:14px;">
-    <li>Authentication and API keys for external devs</li>
-    <li>Versioned endpoints (<code>/v1</code>, <code>/v2</code>) as the ecosystem grows</li>
-    <li>Webhook/event endpoints for real-time updates</li>
+    <li>All endpoints are JSON and share the wrapper: <code>{ ok: true|false, data|error }</code>.</li>
+    <li>API keys are optional for localhost; on VPS you can require them via <code>mg_settings.api_require_key</code>.</li>
+    <li>Per-tier request quotas and feature gates are enforced in <code>api/bootstrap.php</code>.</li>
+    <li>Use the versioned <code>/api/v1/</code> routes for anything public or third-party.</li>
 </ul>
 
 </body>

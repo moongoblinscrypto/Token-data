@@ -1,179 +1,195 @@
 <?php
 // mooglife/api/og_rewards.php
-// OG Rewards API: list OG reward records, with optional wallet/type/status filters.
+// OG Rewards API: list OG rewards, with optional filters.
+//
+// Schema-aware:
+// - Detects table name (mg_moog_og_rewards / mg_og_rewards / og_rewards / mg_ogrewards)
+// - Detects wallet, type, status columns when present
+// - Returns raw DB rows so schema changes won't break the API.
 
 declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 
 /** @var mysqli $db */
 
-// ---------------------------------------------------------------------
-// Resolve OG rewards table name
-// Tries these in order so it works with your existing schema.
-// ---------------------------------------------------------------------
+// -------------------------------------
+// Detect OG rewards table
+// -------------------------------------
+$candidateTables = ['mg_moog_og_rewards', 'mg_og_rewards', 'og_rewards', 'mg_ogrewards'];
 $ogTable = null;
-foreach (['mg_og_rewards', 'og_rewards', 'mg_ogrewards'] as $candidate) {
-    try {
-        $safe = $db->real_escape_string($candidate);
+
+try {
+    foreach ($candidateTables as $t) {
+        $safe = $db->real_escape_string($t);
         $res  = $db->query("SHOW TABLES LIKE '{$safe}'");
         if ($res && $res->num_rows > 0) {
-            $ogTable = $candidate;
+            $ogTable = $t;
             $res->close();
             break;
         }
         if ($res) {
             $res->close();
         }
-    } catch (Throwable $e) {
-        // ignore and try next
     }
+} catch (Throwable $e) {
+    api_error('Failed to inspect OG rewards tables.', 500, $e->getMessage());
 }
 
 if ($ogTable === null) {
-    api_error('OG rewards table not found (expected mg_og_rewards / og_rewards / mg_ogrewards)', 500);
+    api_error('OG rewards table not found (mg_moog_og_rewards / mg_og_rewards / og_rewards / mg_ogrewards).', 500);
 }
 
-// ---------------------------------------------------------------------
-// Detect key columns so we don't guess wrong
-// ---------------------------------------------------------------------
-$walletColumn = null;
-foreach (['wallet', 'wallet_address'] as $col) {
-    try {
-        $safeCol = $db->real_escape_string($col);
-        $res     = $db->query("SHOW COLUMNS FROM `{$ogTable}` LIKE '{$safeCol}'");
-        if ($res && $res->num_rows > 0) {
-            $walletColumn = $col;
-            $res->close();
+// -------------------------------------
+// Inspect columns
+// -------------------------------------
+$columns     = [];
+$walletCol   = null;
+$typeCol     = null;
+$statusCol   = null;
+
+// candidate names we try to match for each semantic
+$walletCands = ['wallet', 'wallet_address', 'holder_wallet'];
+$typeCands   = ['reward_type', 'type'];
+$statusCands = ['status', 'reward_status'];
+
+try {
+    $res = $db->query("SHOW COLUMNS FROM `{$ogTable}`");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $colName   = (string)$row['Field'];
+            $columns[] = $colName;
+        }
+        $res->close();
+    }
+
+    foreach ($walletCands as $cand) {
+        if (in_array($cand, $columns, true)) {
+            $walletCol = $cand;
             break;
         }
-        if ($res) {
-            $res->close();
-        }
-    } catch (Throwable $e) {
-        // ignore
     }
-}
-
-// Order-by column: prefer created_at, then reward_time, else id
-$orderColumn = 'id';
-foreach (['created_at', 'reward_time'] as $col) {
-    try {
-        $safeCol = $db->real_escape_string($col);
-        $res     = $db->query("SHOW COLUMNS FROM `{$ogTable}` LIKE '{$safeCol}'");
-        if ($res && $res->num_rows > 0) {
-            $orderColumn = $col;
-            $res->close();
+    foreach ($typeCands as $cand) {
+        if (in_array($cand, $columns, true)) {
+            $typeCol = $cand;
             break;
         }
-        if ($res) {
-            $res->close();
-        }
-    } catch (Throwable $e) {
-        // ignore
     }
+    foreach ($statusCands as $cand) {
+        if (in_array($cand, $columns, true)) {
+            $statusCol = $cand;
+            break;
+        }
+    }
+} catch (Throwable $e) {
+    api_error('Failed to inspect OG rewards columns.', 500, $e->getMessage());
 }
 
-// Optional filter columns
-$hasType   = false;
-$hasStatus = false;
+// -------------------------------------
+// Inputs
+// -------------------------------------
+$wallet = trim((string)api_get('wallet', ''));
+$type   = trim((string)api_get('type', ''));
+$status = trim((string)api_get('status', ''));
 
-foreach (['reward_type' => 'hasType', 'status' => 'hasStatus'] as $col => $flag) {
-    try {
-        $safeCol = $db->real_escape_string($col);
-        $res     = $db->query("SHOW COLUMNS FROM `{$ogTable}` LIKE '{$safeCol}'");
-        if ($res && $res->num_rows > 0) {
-            if ($flag === 'hasType')   { $hasType = true; }
-            if ($flag === 'hasStatus') { $hasStatus = true; }
-        }
-        if ($res) {
-            $res->close();
-        }
-    } catch (Throwable $e) {
-        // ignore
-    }
+// Default list limit
+$limit = (int)api_get('limit', 100);
+if ($limit <= 0) {
+    $limit = 100;
 }
 
-// ---------------------------------------------------------------------
-// Query params
-// ---------------------------------------------------------------------
-$wallet = (string) api_get('wallet', '');
-$wallet = preg_replace('/\s+/', '', $wallet);
+// Per-tier caps
+$limit = moog_api_cap_limit(
+    $limit,
+    [
+        'free'      => 100,
+        'anonymous' => 100,
+        'pro'       => 1000,
+        'internal'  => 5000,
+        'default'   => 100,
+    ],
+    false
+);
 
-$type   = (string) api_get('type', '');
-$type   = trim($type);
+$tier = moog_api_effective_tier();
 
-$status = (string) api_get('status', '');
-$status = trim($status);
-
-$limit  = (int) api_get('limit', 100);
-if ($limit < 1)    $limit = 1;
-if ($limit > 1000) $limit = 1000;
-
-// ---------------------------------------------------------------------
+// -------------------------------------
 // Build query
-// We intentionally use SELECT * so the API always returns the full row,
-// no matter what columns you add later.
-// ---------------------------------------------------------------------
+// -------------------------------------
 $where  = [];
 $params = [];
 $types  = '';
 
-// Wallet filter (only if column exists)
-if ($wallet !== '' && $walletColumn !== null) {
-    $where[]  = "`{$walletColumn}` = ?";
-    $types   .= 's';
+// Apply filters only if corresponding column exists
+if ($wallet !== '' && $walletCol !== null) {
+    $where[]  = "`{$walletCol}` = ?";
     $params[] = $wallet;
+    $types   .= 's';
 }
 
-// Reward type filter (if column exists)
-if ($type !== '' && $hasType) {
-    $where[]  = "reward_type = ?";
-    $types   .= 's';
+if ($type !== '' && $typeCol !== null) {
+    $where[]  = "`{$typeCol}` = ?";
     $params[] = $type;
-}
-
-// Status filter (if column exists)
-if ($status !== '' && $hasStatus) {
-    $where[]  = "status = ?";
     $types   .= 's';
+}
+
+if ($status !== '' && $statusCol !== null) {
+    $where[]  = "`{$statusCol}` = ?";
     $params[] = $status;
+    $types   .= 's';
 }
 
-$whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+// Choose ORDER BY column
+$orderCol = null;
+foreach (['created_at', 'reward_time', 'updated_at', 'id'] as $cand) {
+    if (in_array($cand, $columns, true)) {
+        $orderCol = $cand;
+        break;
+    }
+}
+if ($orderCol === null) {
+    $orderCol = $columns[0] ?? 'id';
+}
 
-$sql = "
-    SELECT
-        *
-    FROM `{$ogTable}`
-    {$whereSql}
-    ORDER BY `{$orderColumn}` DESC, id DESC
-    LIMIT ?
-";
+$sql = "SELECT * FROM `{$ogTable}`";
+if ($where) {
+    $sql .= ' WHERE ' . implode(' AND ', $where);
+}
+$sql .= " ORDER BY `{$orderCol}` DESC LIMIT ?";
 
-$types  .= 'i';
 $params[] = $limit;
+$types   .= 'i';
 
-$stmt = $db->prepare($sql);
-if (!$stmt) {
-    api_error('DB error preparing OG rewards query', 500, $db->error);
+// -------------------------------------
+// Execute
+// -------------------------------------
+try {
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        api_error('DB error preparing OG rewards query.', 500, $db->error);
+    }
+
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $res = $stmt->get_result();
+
+    $rows = [];
+    while ($row = $res->fetch_assoc()) {
+        $rows[] = $row; // raw row
+    }
+    $stmt->close();
+
+    api_ok([
+        'tier'       => $tier,
+        'table'      => $ogTable,
+        'wallet_col' => $walletCol,
+        'type_col'   => $typeCol,
+        'status_col' => $statusCol,
+        'limit'      => $limit,
+        'wallet'     => $wallet !== '' ? $wallet : null,
+        'type'       => $type !== '' ? $type : null,
+        'status'     => $status !== '' ? $status : null,
+        'rows'       => $rows,
+    ]);
+} catch (Throwable $e) {
+    api_error('Failed to load OG rewards.', 500, $e->getMessage());
 }
-
-$stmt->bind_param($types, ...$params);
-$stmt->execute();
-$res = $stmt->get_result();
-
-$rows = [];
-while ($row = $res->fetch_assoc()) {
-    $rows[] = $row;
-}
-$stmt->close();
-
-api_ok([
-    'table'   => $ogTable,
-    'limit'   => $limit,
-    'wallet'  => ($wallet !== '' ? $wallet : null),
-    'type'    => ($type   !== '' ? $type   : null),
-    'status'  => ($status !== '' ? $status : null),
-    'count'   => count($rows),
-    'items'   => $rows,
-]);
