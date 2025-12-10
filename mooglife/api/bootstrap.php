@@ -1,7 +1,7 @@
 <?php
 // mooglife/api/bootstrap.php
 // Common bootstrap for all Moog API endpoints.
-// Includes API key tiers + daily limits, with localhost-friendly behavior.
+// Includes API key tiers + daily limits + request usage logging.
 
 declare(strict_types=1);
 
@@ -167,6 +167,26 @@ function moog_api_keys_table_exists(mysqli $db): bool
 {
     try {
         $res = $db->query("SHOW TABLES LIKE 'mg_api_keys'");
+        if ($res && $res->num_rows > 0) {
+            $res->close();
+            return true;
+        }
+        if ($res) {
+            $res->close();
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+    return false;
+}
+
+/**
+ * Check whether mg_api_usage_log table exists.
+ */
+function moog_api_usage_table_exists(mysqli $db): bool
+{
+    try {
+        $res = $db->query("SHOW TABLES LIKE 'mg_api_usage_log'");
         if ($res && $res->num_rows > 0) {
             $res->close();
             return true;
@@ -349,6 +369,68 @@ function moog_api_authenticate(mysqli $db, bool $requireKey): ?array
 }
 
 /**
+ * Log a usage row into mg_api_usage_log (if table exists).
+ *
+ * @param mysqli $db
+ * @param string $endpoint
+ */
+function moog_api_log_usage(mysqli $db, string $endpoint): void
+{
+    if (!moog_api_usage_table_exists($db)) {
+        return;
+    }
+
+    try {
+        $auth   = $GLOBALS['MOOG_API_AUTH'] ?? null;
+        $tier   = moog_api_effective_tier();
+        $ip     = $_SERVER['REMOTE_ADDR'] ?? '';
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+        $apiKeyId    = null;
+        $apiKeyLabel = null;
+
+        if (is_array($auth)) {
+            $apiKeyId    = $auth['id'] ?? null;
+            $apiKeyLabel = $auth['label'] ?? null;
+        }
+
+        $sql = "
+            INSERT INTO mg_api_usage_log
+                (api_key_id, api_key_label, tier, endpoint, method, ip, created_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?, NOW())
+        ";
+        $stmt = $db->prepare($sql);
+        if (!$stmt) {
+            return;
+        }
+
+        $apiKeyIdInt = $apiKeyId !== null ? (int)$apiKeyId : null;
+        $tierStr     = (string)$tier;
+        $epStr       = (string)$endpoint;
+        $methodStr   = (string)$method;
+        $ipStr       = (string)$ip;
+
+        // bind_param does not like nulls for "i" unless using references carefully; use "is" types accordingly
+        // We'll store api_key_id as int or NULL via "i" with null-safe cast:
+        $stmt->bind_param(
+            'isssss',
+            $apiKeyIdInt,
+            $apiKeyLabel,
+            $tierStr,
+            $epStr,
+            $methodStr,
+            $ipStr
+        );
+        $stmt->execute();
+        $stmt->close();
+    } catch (Throwable $e) {
+        // Never break the API because logging failed
+        return;
+    }
+}
+
+/**
  * Get current API auth context (or null).
  *
  * @return array<string,mixed>|null
@@ -366,7 +448,7 @@ function moog_api_current_key()
  */
 function moog_api_effective_tier(): string
 {
-    $auth     = moog_api_current_key();
+    $auth     = $GLOBALS['MOOG_API_AUTH'] ?? null;
     $envLocal = $GLOBALS['MOOG_API_ENV_LOCAL'] ?? false;
 
     if ($auth) {
@@ -440,3 +522,7 @@ if (!$envIsLocal && !empty($settings['api_require_key']) && $settings['api_requi
 
 // Authenticate (if key present or required) and expose global context
 $GLOBALS['MOOG_API_AUTH'] = moog_api_authenticate($db, $requireKey);
+
+// Log usage row (best-effort, never fatal)
+$endpointPath = $_SERVER['SCRIPT_NAME'] ?? '';
+moog_api_log_usage($db, $endpointPath);
