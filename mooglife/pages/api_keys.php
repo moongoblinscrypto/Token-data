@@ -6,15 +6,6 @@ require __DIR__ . '/../includes/auth.php';
 mg_require_login();
 
 $currentUser = mg_current_user();
-if (!$currentUser || ($currentUser['role'] ?? '') !== 'admin') {
-    ?>
-    <h1>API Keys</h1>
-    <div class="card">
-        <p class="muted">You must be an <strong>admin</strong> to manage API keys.</p>
-    </div>
-    <?php
-    return;
-}
 
 require_once __DIR__ . '/../includes/db.php';
 $db = mg_db();
@@ -79,28 +70,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$stmt) {
                 $errors[] = 'DB error preparing insert: ' . $db->error;
             } else {
-                // daily_limit is nullable
-                if ($dailyLimitValue === null) {
-                    $stmt->bind_param(
-                        'ssisis',
-                        $apiKey,
-                        $label,
-                        $ownerId,
-                        $tier,
-                        $dailyLimitValue,
-                        $allowedIps
-                    );
-                } else {
-                    $stmt->bind_param(
-                        'ssisis',
-                        $apiKey,
-                        $label,
-                        $ownerId,
-                        $tier,
-                        $dailyLimitValue,
-                        $allowedIps
-                    );
-                }
+                // daily_limit is nullable (can be null)
+                $stmt->bind_param(
+                    'ssisis',
+                    $apiKey,
+                    $label,
+                    $ownerId,
+                    $tier,
+                    $dailyLimitValue,
+                    $allowedIps
+                );
 
                 if ($stmt->execute()) {
                     $notices[] = 'API key created successfully.';
@@ -342,11 +321,24 @@ try {
                     <tr>
                         <td><?php echo $id; ?></td>
                         <td><?php echo h($label); ?></td>
-                        <td>
-                            <code title="<?php echo h($apiKey); ?>">
-                                <?php echo h($shortKey); ?>
-                            </code>
-                        </td>
+                        <td style="max-width:260px;">
+    <input
+        type="text"
+        value="<?php echo h($apiKey); ?>"
+        readonly
+        style="
+            width:100%;
+            font-size:11px;
+            background:#020617;
+            border:1px solid #1e293b;
+            color:#e5e7eb;
+            padding:2px 4px;
+            border-radius:4px;
+        "
+        onclick="this.select();"
+    >
+</td>
+
                         <td><?php echo $ownerName ? h($ownerName) : '<span class="muted">–</span>'; ?></td>
                         <td><?php echo h($tierLabel); ?></td>
                         <td>
