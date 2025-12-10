@@ -67,7 +67,12 @@ require_once __DIR__ . '/../includes/db.php';
     </p>
 </div>
 
-<!-- MARKET -->
+<div class="endpoint">
+    <h2>System Info API</h2>
+    <p>Environment, DB metadata, tables, last sync times, and settings snapshot.</p>
+    <p><a href="system.php">system.php</a></p>
+</div>
+
 <div class="endpoint">
     <h2>Market API</h2>
     <p>Latest snapshot or full history.</p>
@@ -75,7 +80,6 @@ require_once __DIR__ . '/../includes/db.php';
     <p><code>?mode=history&amp;limit=200</code></p>
 </div>
 
-<!-- HOLDERS -->
 <div class="endpoint">
     <h2>Holders API</h2>
     <p>Top wallets by bag size or a single holder lookup.</p>
@@ -86,7 +90,6 @@ require_once __DIR__ . '/../includes/db.php';
     </p>
 </div>
 
-<!-- TRANSACTIONS -->
 <div class="endpoint">
     <h2>Transactions API</h2>
     <p>Recent MOOG transactions with filters.</p>
@@ -99,17 +102,13 @@ require_once __DIR__ . '/../includes/db.php';
     </p>
 </div>
 
-<!-- OG BUYERS -->
 <div class="endpoint">
     <h2>OG Buyers API</h2>
     <p>Complete OG buyers list or single wallet record.</p>
     <p><a href="og_buyers.php">og_buyers.php</a></p>
-    <p>
-        <code>?wallet=YOUR_WALLET</code>
-    </p>
+    <p><code>?wallet=YOUR_WALLET</code></p>
 </div>
 
-<!-- AIRDROPS -->
 <div class="endpoint">
     <h2>Airdrops API</h2>
     <p>Airdrop records and per-wallet totals.</p>
@@ -122,7 +121,6 @@ require_once __DIR__ . '/../includes/db.php';
     </p>
 </div>
 
-<!-- OG REWARDS -->
 <div class="endpoint">
     <h2>OG Rewards API</h2>
     <p>OG rewards table with flexible filters.</p>
@@ -139,9 +137,9 @@ require_once __DIR__ . '/../includes/db.php';
 
 <h2 style="color:#7dd3fc;margin-top:0;">Coming Soon</h2>
 <ul style="color:#94a3b8;font-size:14px;">
-    <li>Settings / system info API endpoint</li>
     <li>Authentication and API keys for external devs</li>
     <li>Versioned endpoints (<code>/v1</code>, <code>/v2</code>) as the ecosystem grows</li>
+    <li>Webhook/event endpoints for real-time updates</li>
 </ul>
 
 </body>
