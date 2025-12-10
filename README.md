@@ -42,5 +42,5 @@ A VPS deployment version will follow once features stabilize.
 - Wallet-based lookup
 
 ### **🧩 Complete API Layer**
-Accessible at:
+Accessible at: Building Now
 
