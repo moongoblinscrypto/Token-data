@@ -46,16 +46,22 @@ mg_require_login();
 </div>
 
 <div class="card" style="margin-bottom:16px;">
-    <h2 style="margin-top:0;">Holders API</h2>
-    <p class="muted" style="font-size:13px;margin-bottom:6px;">
-        Top MOOG holders by bag size or a single wallet lookup.
+    <h2 style="margin-top:0;font-size:16px;">Holders API</h2>
+    <p class="muted" style="font-size:13px;">
+        Top MOOG holders by bag size, or single-wallet lookup with rank.
     </p>
-    <ul style="font-size:13px;line-height:1.5;">
-        <li><code>/api/holders.php</code> – top 100 holders by default</li>
-        <li><code>/api/holders.php?limit=25</code> – limit results (1–500)</li>
-        <li><code>/api/holders.php?wallet=YOUR_WALLET</code> – single wallet with dynamic rank</li>
-    </ul>
+    <pre class="inline-code" style="font-size:12px;">
+/api/holders.php
+    → top holders (limit default 100; tier caps: free 100, pro 500, internal 2000)
+
+/api/holders.php?limit=250
+    → same, with limit override (subject to tier caps)
+
+/api/holders.php?wallet=YOUR_WALLET
+    → single wallet profile (ui_amount, percent, rank, token account)
+    </pre>
 </div>
+
 
 <div class="card" style="margin-bottom:16px;">
     <h2 style="margin-top:0;">Transactions API</h2>
