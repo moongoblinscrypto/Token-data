@@ -78,7 +78,7 @@ if ($wallet !== '') {
         if ($res && $res->num_rows > 0) {
             $res->close();
 
-            // NOTE: `rank` is a reserved word in MySQL → backtick it
+            // NOTE: `rank` is reserved → backtick it
             $sql = "
                 SELECT
                     wallet,
@@ -191,14 +191,13 @@ if ($wallet !== '') {
         if ($res && $res->num_rows > 0) {
             $res->close();
 
-            // NOTE: your table doesn't have tx_signature, so we don't select it.
+            // NO price_usd or tx_signature here – matches your table
             $sql = "
                 SELECT
                     id,
                     block_time,
                     direction,
                     amount_moog,
-                    price_usd,
                     from_wallet,
                     to_wallet,
                     source
@@ -525,7 +524,6 @@ if ($wallet !== '') {
                             <th>Time</th>
                             <th>Dir</th>
                             <th>Amount (MOOG)</th>
-                            <th>Price (USD)</th>
                             <th>From</th>
                             <th>To</th>
                             <th>Source</th>
@@ -537,7 +535,6 @@ if ($wallet !== '') {
                             <td><?php echo h($row['block_time']); ?></td>
                             <td><?php echo strtoupper(h($row['direction'])); ?></td>
                             <td><?php echo number_format((float)$row['amount_moog'], 6); ?></td>
-                            <td><?php echo $row['price_usd'] !== null ? number_format((float)$row['price_usd'], 6) : ''; ?></td>
                             <td style="font-family:monospace;"><?php echo h($row['from_wallet']); ?></td>
                             <td style="font-family:monospace;"><?php echo h($row['to_wallet']); ?></td>
                             <td><?php echo h($row['source']); ?></td>
