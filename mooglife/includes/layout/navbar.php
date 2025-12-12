@@ -31,6 +31,7 @@ function ml_nav_item(string $page, string $label): void
             ml_nav_item('ogbuyers',    'OG Buyers');
             ml_nav_item('api_docs',    'Moog API');
             ml_nav_item('api_keys',    'API Keys');
+            ml_nav_item('api_usage',   'API Usage');
             ml_nav_item('settings',    'Settings');
             ml_nav_item('admin_users', 'Admin Users');
         ?>

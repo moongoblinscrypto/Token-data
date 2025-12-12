@@ -1,403 +1,290 @@
 <?php
 // mooglife/pages/market.php
-// Market dashboard using mg_market_history.
-// Price chart uses MOOG price × 1,000,000 so small moves actually show.
-// No external plugins, just Chart.js.
+// Market Stats – uses mg_market_history for cards + charts.
 
-require __DIR__ . '/../includes/auth.php';
-require __DIR__ . '/../includes/db.php';
-
+require_once __DIR__ . '/../includes/auth.php';
 mg_require_login();
+
+require_once __DIR__ . '/../includes/db.php';
 $db = mg_db();
 
-// ------------------------------------------------------
-// Load snapshots from mg_market_history if present,
-// otherwise fallback to mg_market_cache.
-// ------------------------------------------------------
+// ---------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------
+$MARKET_TABLE = 'mg_market_history';
+$MAX_POINTS   = 400;
 
-$rows   = [];
+// Helpers
+function ml_safe_float($row, $key, $default = 0.0): float
+{
+    if (!is_array($row)) return (float)$default;
+    if (!array_key_exists($key, $row)) return (float)$default;
+    $v = $row[$key];
+
+    // If DB returns strings, normalize
+    if ($v === null || $v === '') return (float)$default;
+    return (float)$v;
+}
+
+function ml_safe_int($row, $key, $default = 0): int
+{
+    if (!is_array($row)) return (int)$default;
+    if (!array_key_exists($key, $row)) return (int)$default;
+    $v = $row[$key];
+    if ($v === null || $v === '') return (int)$default;
+    return (int)$v;
+}
+
+// ---------------------------------------------------------------------
+// Load counts + latest + chart rows
+// ---------------------------------------------------------------------
+$totalSnapshots = 0;
 $latest = null;
+$chartRows = [];
 
-// Check for history table
-$hasHistory = false;
 try {
-    $res = $db->query("SHOW TABLES LIKE 'mg_market_history'");
-    if ($res && $res->num_rows > 0) {
-        $hasHistory = true;
-    }
-    if ($res) {
-        $res->close();
+    $rs = $db->query("SELECT COUNT(*) AS c FROM `{$MARKET_TABLE}`");
+    if ($rs && ($r = $rs->fetch_assoc())) $totalSnapshots = (int)$r['c'];
+
+    $rs2 = $db->query("SELECT * FROM `{$MARKET_TABLE}` ORDER BY `created_at` DESC LIMIT 1");
+    if ($rs2 && ($r2 = $rs2->fetch_assoc())) $latest = $r2;
+
+    $rs3 = $db->query("
+        SELECT `created_at`, `price_usd`, `liquidity_usd`, `sol_price_usd`, `holders`
+        FROM `{$MARKET_TABLE}`
+        ORDER BY `created_at` DESC
+        LIMIT {$MAX_POINTS}
+    ");
+    if ($rs3) {
+        while ($rr = $rs3->fetch_assoc()) $chartRows[] = $rr;
     }
 } catch (Throwable $e) {
-    $hasHistory = false;
+    $totalSnapshots = 0;
+    $latest = null;
+    $chartRows = [];
 }
 
-if ($hasHistory) {
-    $sql = "
-        SELECT 
-            token_symbol,
-            token_mint,
-            price_usd,
-            market_cap_usd,
-            fdv_usd,
-            liquidity_usd,
-            volume24h_usd,
-            price_change_24h,
-            holders,
-            sol_price_usd,
-            created_at AS snapshot_time
-        FROM mg_market_history
-        ORDER BY created_at ASC
-        LIMIT 1000
-    ";
-} else {
-    $sql = "
-        SELECT 
-            token_symbol,
-            token_mint,
-            price_usd,
-            market_cap_usd,
-            fdv_usd,
-            liquidity_usd,
-            volume24h_usd,
-            price_change_24h,
-            holders,
-            sol_price_usd,
-            updated_at AS snapshot_time
-        FROM mg_market_cache
-        ORDER BY updated_at ASC
-        LIMIT 100
-    ";
-}
+// Oldest -> newest
+$chartRows = array_reverse($chartRows);
 
-if ($res = $db->query($sql)) {
-    while ($r = $res->fetch_assoc()) {
-        $rows[] = $r;
-    }
-    $res->close();
-}
+// ---------------------------------------------------------------------
+// Cards (latest row)
+// ---------------------------------------------------------------------
+$priceUsd      = $latest ? ml_safe_float($latest, 'price_usd')       : 0.0;
+$fdvUsd        = $latest ? ml_safe_float($latest, 'fdv_usd')         : 0.0;
+$liquidityUsd  = $latest ? ml_safe_float($latest, 'liquidity_usd')   : 0.0;
+$volume24hUsd  = $latest ? ml_safe_float($latest, 'volume24h_usd')   : 0.0;
+$solPriceUsd   = $latest ? ml_safe_float($latest, 'sol_price_usd')   : 0.0;
+$holdersCount  = $latest ? ml_safe_int($latest, 'holders')           : 0;
 
-if ($rows) {
-    $latest = end($rows);
-}
+$priceChange24 = ($latest && array_key_exists('price_change_24h', $latest) && $latest['price_change_24h'] !== null)
+    ? (float)$latest['price_change_24h']
+    : 0.0;
 
-// ------------------------------------------------------
-// Build arrays for charts
-// - PriceScaled = price_usd × 1,000,000
-// - Auto y-axis zoom based on min/max of scaled price
-// ------------------------------------------------------
-$labels       = [];
-$priceScaled  = [];
-$liq          = [];
-$solLabels    = [];
-$solPrice     = [];
-
-$minScaled = null;
-$maxScaled = null;
-
-foreach ($rows as $row) {
-    $tsStr = $row['snapshot_time'] ?? '';
-    $t     = strtotime($tsStr);
-    if (!$t) continue;
-
-    $label = date('m-d H:i', $t);
-
-    $labels[]   = $label;
-    $solLabels[] = $label;
-
-    $pReal   = (float)$row['price_usd'];
-    $pScaled = $pReal * 1000000.0;
-    $l       = (float)$row['liquidity_usd'];
-    $s       = (float)$row['sol_price_usd'];
-
-    $priceScaled[] = $pScaled;
-    $liq[]         = $l;
-    $solPrice[]    = $s;
-
-    if ($minScaled === null || $pScaled < $minScaled) $minScaled = $pScaled;
-    if ($maxScaled === null || $pScaled > $maxScaled) $maxScaled = $pScaled;
-}
-
-// If no data, avoid NaNs
-if ($minScaled === null) {
-    $minScaled = 0.0;
-    $maxScaled = 0.0;
-}
-
-// Build padded y-range for scaled price axis
-if ($minScaled === $maxScaled) {
-    $pad    = ($minScaled > 0) ? $minScaled * 0.2 : 0.1;
-    $y1Min  = $minScaled - $pad;
-    $y1Max  = $maxScaled + $pad;
-} else {
-    $range  = $maxScaled - $minScaled;
-    $y1Min  = $minScaled - $range * 0.15;
-    $y1Max  = $maxScaled + $range * 0.15;
-    if ($y1Min < 0) $y1Min = 0;
-}
-
-// JSON for JS
-$labelsJson      = json_encode($labels, JSON_UNESCAPED_SLASHES);
-$priceScaledJson = json_encode($priceScaled, JSON_UNESCAPED_SLASHES);
-$liqJson         = json_encode($liq, JSON_UNESCAPED_SLASHES);
-$labelsSolJson   = json_encode($solLabels, JSON_UNESCAPED_SLASHES);
-$solJson         = json_encode($solPrice, JSON_UNESCAPED_SLASHES);
-
-$pointsCount = count($labels);
-$y1MinJson   = json_encode($y1Min);
-$y1MaxJson   = json_encode($y1Max);
 ?>
-<h1>Market Stats</h1>
-<p class="muted">
-    Live snapshots from <code><?php echo $hasHistory ? 'mg_market_history' : 'mg_market_cache'; ?></code>.
-    Currently tracking <strong><?php echo (int)$pointsCount; ?></strong> snapshot<?php echo $pointsCount === 1 ? '' : 's'; ?>.
-</p>
-
-<?php if ($pointsCount < 2): ?>
-    <div style="margin-bottom:10px;padding:8px 10px;border-radius:6px;background:#1e293b;color:#e5e7eb;font-size:13px;">
-        You only have <strong><?php echo (int)$pointsCount; ?></strong> data point<?php echo $pointsCount === 1 ? '' : 's'; ?>.
-        As your cron runs and fills <code>mg_market_history</code>, this will shape into a proper trend.
-    </div>
-<?php endif; ?>
-
-<?php if ($latest): ?>
-<div class="cards" style="margin-bottom:15px;">
-    <div class="card">
-        <div class="card-label">MOOG Price (USD)</div>
-        <div class="card-value">
-            $<?php echo number_format((float)$latest['price_usd'], 10); ?>
-        </div>
-        <div class="card-sub">
-            Last update: <?php echo htmlspecialchars($latest['snapshot_time'], ENT_QUOTES, 'UTF-8'); ?>
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-label">FDV (USD)</div>
-        <div class="card-value">
-            $<?php echo number_format((float)$latest['fdv_usd'], 2); ?>
-        </div>
-        <div class="card-sub">
-            Market cap: $<?php echo number_format((float)$latest['market_cap_usd'], 2); ?>
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-label">Liquidity (USD)</div>
-        <div class="card-value">
-            $<?php echo number_format((float)$latest['liquidity_usd'], 2); ?>
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-label">Volume 24h (USD)</div>
-        <div class="card-value">
-            $<?php echo number_format((float)$latest['volume24h_usd'], 2); ?>
-        </div>
-        <div class="card-sub">
-            24h Change: <?php echo number_format((float)$latest['price_change_24h'], 2); ?>%
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-label">SOL Price (USD)</div>
-        <div class="card-value">
-            $<?php echo number_format((float)$latest['sol_price_usd'], 2); ?>
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-label">Holders</div>
-        <div class="card-value">
-            <?php echo (int)$latest['holders']; ?>
-        </div>
-    </div>
-</div>
-
-<div class="card" style="margin-bottom:20px;">
-    <h3 style="margin-top:0;">Price &amp; Liquidity (last <?php echo (int)$pointsCount; ?> points)</h3>
-    <div style="position:relative;width:100%;height:320px;">
-        <canvas id="marketChart"></canvas>
-    </div>
-    <p class="muted" style="font-size:11px;margin-top:6px;">
-        Left axis is <strong>MOOG price × 1,000,000</strong> (so tiny moves look more like Gecko),
-        right axis is <strong>liquidity (USD)</strong>. Cards above still show the true USD price.
+<div class="page-header">
+    <h1>Market Stats</h1>
+    <p class="sub">
+        Live snapshots from <code><?php echo htmlspecialchars($MARKET_TABLE, ENT_QUOTES, 'UTF-8'); ?></code>.
+        Currently tracking <?php echo number_format($totalSnapshots); ?> snapshots.
     </p>
 </div>
 
-<div class="card" style="margin-bottom:20px;">
-    <h3 style="margin-top:0;">SOL Price (same window)</h3>
-    <div style="position:relative;width:100%;height:260px;">
-        <canvas id="solChart"></canvas>
+<div class="grid grid-4 gap-3" style="margin-bottom:18px;">
+    <div class="card card-metric">
+        <div class="card-sub">MOOG Price (USD)</div>
+        <div class="metric">$<?php echo number_format($priceUsd, 9); ?></div>
+        <div class="metric-sub">
+            24h Change:
+            <?php
+                $cls  = $priceChange24 > 0 ? 'pill up' : ($priceChange24 < 0 ? 'pill down' : 'pill');
+                $sign = $priceChange24 > 0 ? '+' : '';
+            ?>
+            <span class="<?php echo $cls; ?>">
+                <?php echo $sign . number_format($priceChange24, 2); ?>%
+            </span>
+        </div>
+        <?php if ($latest && !empty($latest['created_at'])): ?>
+            <div class="metric-footer">Last update: <?php echo htmlspecialchars($latest['created_at'], ENT_QUOTES, 'UTF-8'); ?></div>
+        <?php endif; ?>
+    </div>
+
+    <div class="card card-metric">
+        <div class="card-sub">FDV (USD)</div>
+        <div class="metric">$<?php echo number_format($fdvUsd, 2); ?></div>
+        <div class="metric-sub">Market cap style FDV</div>
+    </div>
+
+    <div class="card card-metric">
+        <div class="card-sub">Liquidity (USD)</div>
+        <div class="metric">$<?php echo number_format($liquidityUsd, 2); ?></div>
+        <div class="metric-sub">24h Volume: $<?php echo number_format($volume24hUsd, 2); ?></div>
+    </div>
+
+    <div class="card card-metric">
+        <div class="card-sub">SOL Price (USD)</div>
+        <div class="metric">$<?php echo number_format($solPriceUsd, 2); ?></div>
+        <div class="metric-sub">Holders (snapshot): <?php echo number_format($holdersCount); ?></div>
     </div>
 </div>
+
+<?php if (count($chartRows) === 0): ?>
+    <div class="card">
+        <div class="card-sub">Market History</div>
+        <p>No market history rows could be loaded from <code><?php echo htmlspecialchars($MARKET_TABLE, ENT_QUOTES, 'UTF-8'); ?></code>.</p>
+    </div>
 <?php else: ?>
-<div class="card" style="margin-bottom:20px;">
-    <p>No market data yet. Run a sync from the <strong>Sync</strong> page.</p>
-</div>
-<?php endif; ?>
 
-<h2 style="margin-top:20px;">Raw Market Snapshots</h2>
-<table class="data">
-    <thead>
-        <tr>
-            <th>When</th>
-            <th>Price (USD)</th>
-            <th>FDV (USD)</th>
-            <th>Liquidity (USD)</th>
-            <th>Volume 24h (USD)</th>
-            <th>Change 24h (%)</th>
-            <th>SOL Price (USD)</th>
-            <th>Holders</th>
-        </tr>
-    </thead>
-    <tbody>
-    <?php if (!$rows): ?>
-        <tr><td colspan="8">No data yet.</td></tr>
-    <?php else: ?>
-        <?php foreach (array_reverse($rows) as $row): // newest first in table ?>
-            <tr>
-                <td><?php echo htmlspecialchars($row['snapshot_time'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                <td>$<?php echo number_format((float)$row['price_usd'], 10); ?></td>
-                <td>$<?php echo number_format((float)$row['fdv_usd'], 2); ?></td>
-                <td>$<?php echo number_format((float)$row['liquidity_usd'], 2); ?></td>
-                <td>$<?php echo number_format((float)$row['volume24h_usd'], 2); ?></td>
-                <td><?php echo number_format((float)$row['price_change_24h'], 2); ?>%</td>
-                <td>$<?php echo number_format((float)$row['sol_price_usd'], 2); ?></td>
-                <td><?php echo (int)$row['holders']; ?></td>
-            </tr>
-        <?php endforeach; ?>
-    <?php endif; ?>
-    </tbody>
-</table>
+<?php
+// Build chart arrays.
+// IMPORTANT: if sol_price_usd is 0, treat it as NULL so Chart.js doesn't compress to zero.
+$labels = [];
+$priceSeries = [];
+$liquiditySeries = [];
+$solSeries = [];
 
-<?php if ($latest): ?>
-<!-- Chart.js only (no plugins) -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script>
-const labels      = <?php echo $labelsJson; ?>;
-const priceScaled = <?php echo $priceScaledJson; ?>;
-const liq         = <?php echo $liqJson; ?>;
-const solLabels   = <?php echo $labelsSolJson; ?>;
-const solPrice    = <?php echo $solJson; ?>;
-const priceYMin   = <?php echo $y1MinJson; ?>;
-const priceYMax   = <?php echo $y1MaxJson; ?>;
+$minSol = null;
+$maxSol = null;
 
-(function () {
-    const ctx = document.getElementById('marketChart');
-    if (!ctx) return;
+foreach ($chartRows as $r) {
+    $labels[] = $r['created_at'];
 
-    new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [
-                {
-                    label: 'Price × 1,000,000',
-                    data: priceScaled,
-                    borderColor: '#22c55e',
-                    backgroundColor: 'rgba(34, 197, 94, 0.15)',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHitRadius: 5,
-                    tension: 0.25,
-                    yAxisID: 'y1'
-                },
-                {
-                    label: 'Liquidity (USD)',
-                    data: liq,
-                    borderColor: '#3b82f6',
-                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHitRadius: 5,
-                    tension: 0.25,
-                    yAxisID: 'y2'
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: 'index', intersect: false },
-            scales: {
-                x: {
-                    ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
-                    grid: { display: false }
-                },
-                y1: {
-                    type: 'linear',
-                    position: 'left',
-                    min: priceYMin,
-                    max: priceYMax,
-                    title: { display: true, text: 'Price × 1,000,000 (USD)' },
-                    ticks: {
-                        callback: function(value) {
-                            return value.toFixed(3);
-                        }
-                    }
-                },
-                y2: {
-                    type: 'linear',
-                    position: 'right',
-                    grid: { drawOnChartArea: false },
-                    title: { display: true, text: 'Liquidity (USD)' }
-                }
-            },
-            plugins: {
-                legend: { labels: { usePointStyle: true } },
-                tooltip: {
-                    callbacks: {
-                        label: function(ctx) {
-                            if (ctx.datasetIndex === 0) {
-                                const scaled = ctx.parsed.y;
-                                const real   = scaled / 1000000.0;
-                                return 'Price: ' + scaled.toFixed(3) +
-                                       ' (=$' + real.toFixed(10) + ')';
-                            }
-                            return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2);
-                        }
-                    }
-                }
-            }
+    $p = ml_safe_float($r, 'price_usd', 0.0);
+    $l = ml_safe_float($r, 'liquidity_usd', 0.0);
+
+    $sRaw = ml_safe_float($r, 'sol_price_usd', 0.0);
+    $s = ($sRaw <= 0.0) ? null : $sRaw; // <<< key fix
+
+    $priceSeries[] = $p;
+    $liquiditySeries[] = $l;
+    $solSeries[] = $s;
+
+    if ($s !== null) {
+        $minSol = ($minSol === null) ? $s : min($minSol, $s);
+        $maxSol = ($maxSol === null) ? $s : max($maxSol, $s);
+    }
+}
+
+$solSuggestedMin = ($minSol !== null) ? max(1, $minSol - 5) : 1;
+$solSuggestedMax = ($maxSol !== null) ? ($maxSol + 5) : 200;
+?>
+
+    <div class="card" style="margin-bottom:18px;">
+        <div class="card-sub">Price &amp; Liquidity (last <?php echo count($labels); ?> points)</div>
+        <canvas id="moogPriceLiquidityChart" height="120"></canvas>
+        <div class="card-footer">
+            Left axis is MOOG price × 1,000,000 (visibility). Right axis is liquidity (USD).
+            Cards above show true price.
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:18px;">
+        <div class="card-sub">MOOG Candles (15-minute buckets)</div>
+        <div class="card-footer">
+            Candles will require true OHLC data (or building OHLC from per-trade ticks). For now we keep the line chart stable.
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:18px;">
+        <div class="card-sub">SOL Price (same window)</div>
+        <canvas id="solPriceChart" height="120"></canvas>
+        <div class="card-footer">
+            Note: any rows where <code>sol_price_usd = 0</code> are ignored to prevent axis compression.
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        const labels = <?php echo json_encode($labels); ?>;
+
+        // Force numeric conversion (prevents weird string math)
+        const prices = <?php echo json_encode($priceSeries); ?>.map(v => Number(v) || 0);
+        const liquidity = <?php echo json_encode($liquiditySeries); ?>.map(v => Number(v) || 0);
+
+        // solSeries contains nulls (so gaps instead of “drop to zero”)
+        const solPrices = <?php echo json_encode($solSeries); ?>.map(v => (v === null ? null : (Number(v) || null)));
+
+        const scaledPrices = prices.map(v => v * 1000000);
+
+        if (!window.Chart) {
+            console.log("Chart.js missing on this page");
+            return;
         }
-    });
-})();
 
-(function () {
-    const ctx = document.getElementById('solChart');
-    if (!ctx) return;
-
-    new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: solLabels,
-            datasets: [
-                {
-                    label: 'SOL Price (USD)',
-                    data: solPrice,
-                    borderColor: '#f97316',
-                    backgroundColor: 'rgba(249, 115, 22, 0.15)',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHitRadius: 5,
-                    tension: 0.25
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: 'index', intersect: false },
-            scales: {
-                x: {
-                    ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
-                    grid: { display: false }
+        // Price + Liquidity
+        const ctx1 = document.getElementById('moogPriceLiquidityChart');
+        if (ctx1) {
+            new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'MOOG Price × 1,000,000',
+                            data: scaledPrices,
+                            yAxisID: 'yPrice',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            tension: 0.15
+                        },
+                        {
+                            label: 'Liquidity (USD)',
+                            data: liquidity,
+                            yAxisID: 'yLiq',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            tension: 0.15
+                        }
+                    ]
                 },
-                y: {
-                    title: { display: true, text: 'SOL Price (USD)' }
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { ticks: { autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
+                        yPrice: { position: 'left', grid: { display: false }, beginAtZero: false },
+                        yLiq: { position: 'right', grid: { display: false }, beginAtZero: false }
+                    },
+                    plugins: { legend: { labels: { usePointStyle: true } } }
                 }
-            },
-            plugins: {
-                legend: { labels: { usePointStyle: true } }
-            }
+            });
         }
-    });
-})();
-</script>
+
+        // SOL
+        const ctx2 = document.getElementById('solPriceChart');
+        if (ctx2) {
+            new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'SOL Price (USD)',
+                        data: solPrices,
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        tension: 0.15,
+                        spanGaps: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { ticks: { autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
+                        y: {
+                            grid: { display: false },
+                            beginAtZero: false,
+                            suggestedMin: <?php echo json_encode($solSuggestedMin); ?>,
+                            suggestedMax: <?php echo json_encode($solSuggestedMax); ?>
+                        }
+                    },
+                    plugins: { legend: { labels: { usePointStyle: true } } }
+                }
+            });
+        }
+    })();
+    </script>
+
 <?php endif; ?>
